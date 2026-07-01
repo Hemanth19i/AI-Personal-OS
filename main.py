@@ -1,9 +1,11 @@
 """Entry point for AI Personal OS.
 
 Phase 1 skeleton. On startup it loads configuration (generating a default
-config file on first run) and ensures the local data directories exist, then
-prints a liveness banner. Real behaviour (ingestion, retrieval, reasoning) is
-introduced in later milestones per the Build Plan.
+config file on first run), ensures the local data directories exist, and
+initializes the SQLite storage layer (creating the database and schema on
+first run), then prints a liveness banner. A fresh clone can therefore run
+``python main.py`` with no manual setup. Real behaviour (ingestion, retrieval,
+reasoning) is introduced in later milestones per the Build Plan.
 """
 
 from __future__ import annotations
@@ -13,7 +15,8 @@ import sys
 from pathlib import Path
 
 from aipos.config import load_config
-from aipos.paths import ensure_app_directories
+from aipos.paths import database_path, ensure_app_directories
+from aipos.storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,12 @@ def main() -> None:
     ensure_app_directories(config)
     logger.info("Data directory: %s", config.data_dir)
     logger.info("Watched folder: %s", config.watched_folder)
+
+    # Initialize storage: connect (creating the database and files table on
+    # first run) and close cleanly. No data is inserted here.
+    db_path = database_path(config)
+    with SQLiteStorage(db_path):
+        logger.info("SQLite storage initialized at %s (files table ensured)", db_path)
 
     print("AI Personal OS — alive")
 
