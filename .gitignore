@@ -9,8 +9,9 @@ __pycache__/
 .venv/
 venv/
 
-# Local runtime data (created on first run — see Build Plan T0.2)
+# Local runtime data + user config (created on first run — see Build Plan T0.2)
 /data/
+/config.toml
 
 # OS / editor
 .DS_Store
