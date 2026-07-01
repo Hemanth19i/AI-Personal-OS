@@ -1,5 +1,7 @@
 # AI Personal OS — Phase 1 dependencies
 #
 # Dependencies are added per Build Plan milestone, only when a ticket needs
-# them (e.g. watchdog at T1.2, a PDF parser at T2.1, lancedb at T2.4). The
-# T0.1 skeleton requires no third-party packages.
+# them (a PDF parser at T2.1, lancedb at T2.4, etc.).
+
+# T1.2 — folder watching
+watchdog>=4.0

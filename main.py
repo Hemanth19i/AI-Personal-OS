@@ -3,7 +3,8 @@
 Phase 1 skeleton. On startup it loads configuration (generating a default
 config file on first run), ensures the local data directories exist, and
 initializes the SQLite storage layer (creating the database and schema on
-first run), then prints a liveness banner. A fresh clone can therefore run
+first run). It then starts watching the configured folder and runs until
+interrupted (Ctrl+C), logging each newly created file. A fresh clone can run
 ``python main.py`` with no manual setup. Real behaviour (ingestion, retrieval,
 reasoning) is introduced in later milestones per the Build Plan.
 """
@@ -12,10 +13,12 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 from aipos.config import load_config
 from aipos.paths import database_path, ensure_app_directories
+from aipos.sources import FolderSource
 from aipos.storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
@@ -46,7 +49,23 @@ def main() -> None:
     with SQLiteStorage(db_path):
         logger.info("SQLite storage initialized at %s (files table ensured)", db_path)
 
-    print("AI Personal OS — alive")
+    # Start watching the configured folder for new files (T1.2). FolderSource
+    # owns the watching; main only starts it, reports each path, and stops it
+    # cleanly on shutdown. No ingestion happens here — detection only.
+    source = FolderSource(config.watched_folder)
+    source.watch(lambda path: logger.info("New file detected: %s", path))
+
+    # flush=True: stdout is block-buffered when piped, and the process then
+    # blocks in the watch loop, so flush the readiness banner immediately.
+    print("AI Personal OS — alive", flush=True)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested")
+    finally:
+        source.stop()
 
 
 if __name__ == "__main__":
