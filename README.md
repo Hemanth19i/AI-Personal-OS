@@ -1,0 +1,48 @@
+# AI Personal OS
+
+An offline-first intelligence platform that turns your personal files (PDF, TXT,
+Markdown) into structured, searchable, explainable knowledge — entirely on your
+own device. No cloud, no API keys, no data leaving the machine.
+
+> **Documents are inputs. Knowledge is the product.**
+
+This repository is being built in phases against a frozen set of contract
+documents. Phase 1 is a desktop-only flagship MVP: drop a document, have it
+indexed locally, ask questions, receive cited answers, and understand *why*
+those answers were produced.
+
+## Status
+
+Phase 1 — Milestone 0 (project skeleton). See the Build Plan for the current
+ticket.
+
+## Contract documents
+
+These are the single source of truth for the architecture and scope:
+
+- [Product Requirements](AI_Personal_OS_PRD.md)
+- [Architecture Decision Records](AI_Personal_OS_ADR.md)
+- [Design Document](AI_Personal_OS_Design_Doc.md)
+- [Phase 1 Build Plan](AI_Personal_OS_Phase1_Build_Plan.md)
+- [TODO](todo.md)
+
+## Getting started
+
+Requires Python 3.13.
+
+```bash
+python -m venv .venv
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# macOS / Linux:
+source .venv/bin/activate
+
+pip install -r requirements.txt
+python main.py
+```
+
+Expected output:
+
+```
+AI Personal OS — alive
+```
