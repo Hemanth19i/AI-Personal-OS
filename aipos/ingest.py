@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from aipos.chunking import chunk_text
 from aipos.hashing import sha256_file
 from aipos.parsing import parse_pdf
 from aipos.storage import FileRecord, FileStatus, SQLiteStorage
@@ -42,27 +43,36 @@ def process_file(path: Path, storage: SQLiteStorage) -> None:
     """Register a completed file and, if it is a PDF, parse it.
 
     Registration dedupes by content hash. A newly registered PDF is parsed and
-    driven through its lifecycle: PARSING -> READY on success, or FAILED (with
-    the error recorded) on failure. Non-PDF files are left pending for a later
-    parser (TXT/Markdown), and duplicates are skipped.
+    chunked, driven through its lifecycle: PARSING -> CHUNKING -> READY on
+    success, or FAILED (with the error recorded) on failure. Non-PDF files are
+    left pending for a later parser (TXT/Markdown), and duplicates are skipped.
     """
     record = register_file(path, storage)
     if record is None:
         return  # duplicate content, already registered
     if path.suffix.lower() != ".pdf":
         return  # only PDFs are parsed in this ticket
-    _parse_pdf(record.id, path, storage)
+    _process_pdf(record.id, path, storage)
 
 
-def _parse_pdf(file_id: int, path: Path, storage: SQLiteStorage) -> None:
+def _process_pdf(file_id: int, path: Path, storage: SQLiteStorage) -> None:
     storage.update_status(file_id, FileStatus.PARSING)
     try:
-        # Extract the text layer to confirm the PDF is parseable; persisting the
-        # text is the chunking ticket's job, so the result is not stored yet.
-        parse_pdf(path)
+        text = parse_pdf(path)
     except Exception as error:
         logger.exception("PDF parse failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
         return
+
+    storage.update_status(file_id, FileStatus.CHUNKING)
+    try:
+        # Chunks are generated to drive the lifecycle; persisting them is a
+        # later ticket, so the result is used only to report the count.
+        chunks = chunk_text(text)
+    except Exception as error:
+        logger.exception("Chunking failed: %s", path)
+        storage.update_status(file_id, FileStatus.FAILED, error=str(error))
+        return
+
     storage.update_status(file_id, FileStatus.READY)
-    logger.info("Parsed PDF id=%d: %s", file_id, path)
+    logger.info("Processed PDF id=%d (%d chunk(s)): %s", file_id, len(chunks), path)
