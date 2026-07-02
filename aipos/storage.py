@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,25 @@ DATABASE_FILENAME = "aipos.db"
 # multi-workspace support arrives (frozen decision, PRD/Design Doc).
 DEFAULT_WORKSPACE_ID = "default"
 
-# Initial state of a file in the ingestion lifecycle (Design Doc §A5).
-_INITIAL_STATUS = "pending"
+
+class FileStatus(StrEnum):
+    """States a file moves through in the ingestion lifecycle (Design Doc §A5).
+
+    pending → parsing → ocr* → chunking → embedding → extracting → verifying
+    → ready, with failed reachable from any step (ocr applies only to scanned
+    PDFs). Values are the strings persisted in the files.status column.
+    """
+
+    PENDING = "pending"
+    PARSING = "parsing"
+    OCR = "ocr"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    EXTRACTING = "extracting"
+    VERIFYING = "verifying"
+    READY = "ready"
+    FAILED = "failed"
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -52,7 +70,7 @@ class FileRecord:
     workspace_id: str
     path: str
     hash: str
-    status: str
+    status: FileStatus
     error: str | None
     created_at: str
     updated_at: str
@@ -101,7 +119,7 @@ class SQLiteStorage:
         path: str,
         file_hash: str,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
-        status: str = _INITIAL_STATUS,
+        status: FileStatus = FileStatus.PENDING,
         error: str | None = None,
     ) -> int:
         """Insert a file row and return its new id."""
@@ -134,6 +152,24 @@ class SQLiteStorage:
         ).fetchone()
         return _to_record(row) if row is not None else None
 
+    def update_status(
+        self, file_id: int, status: FileStatus, *, error: str | None = None
+    ) -> None:
+        """Set a file's lifecycle status and refresh ``updated_at``.
+
+        ``error`` records a failure reason (typically with ``FileStatus.FAILED``)
+        and is cleared on any status change that does not supply one. Transition
+        legality is not enforced here — storage persists state; the pipeline
+        owns ordering (see T2.1 notes).
+        """
+        connection = self._require_connection()
+        connection.execute(
+            "UPDATE files SET status = ?, error = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (status, error, file_id),
+        )
+        connection.commit()
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise RuntimeError("Storage is not connected; call connect() first")
@@ -146,7 +182,7 @@ def _to_record(row: sqlite3.Row) -> FileRecord:
         workspace_id=row["workspace_id"],
         path=row["path"],
         hash=row["hash"],
-        status=row["status"],
+        status=FileStatus(row["status"]),
         error=row["error"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],

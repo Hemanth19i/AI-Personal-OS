@@ -1,10 +1,11 @@
 """Behaviour tests for the SQLite storage layer."""
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from aipos.storage import DEFAULT_WORKSPACE_ID, SQLiteStorage
+from aipos.storage import DEFAULT_WORKSPACE_ID, FileStatus, SQLiteStorage
 
 
 class SQLiteStorageTests(unittest.TestCase):
@@ -63,6 +64,47 @@ class SQLiteStorageTests(unittest.TestCase):
         disconnected = SQLiteStorage(Path(self._tmp.name) / "other.db")
         with self.assertRaises(RuntimeError):
             disconnected.get_file(1)
+
+    def test_filestatus_vocabulary_matches_design(self) -> None:
+        self.assertEqual(
+            [s.value for s in FileStatus],
+            [
+                "pending", "parsing", "ocr", "chunking", "embedding",
+                "extracting", "verifying", "ready", "failed",
+            ],
+        )
+
+    def test_status_defaults_to_pending_enum(self) -> None:
+        record = self.storage.get_file(self.storage.add_file(path="/a", file_hash="h"))
+        self.assertIs(record.status, FileStatus.PENDING)
+        self.assertIsInstance(record.status, FileStatus)
+
+    def test_update_status_moves_through_lifecycle(self) -> None:
+        file_id = self.storage.add_file(path="/a", file_hash="h")
+        for status in (FileStatus.PARSING, FileStatus.CHUNKING, FileStatus.READY):
+            self.storage.update_status(file_id, status)
+            self.assertIs(self.storage.get_file(file_id).status, status)
+
+    def test_update_status_records_error(self) -> None:
+        file_id = self.storage.add_file(path="/a", file_hash="h")
+        self.storage.update_status(file_id, FileStatus.FAILED, error="boom")
+        record = self.storage.get_file(file_id)
+        self.assertIs(record.status, FileStatus.FAILED)
+        self.assertEqual(record.error, "boom")
+
+    def test_update_status_clears_error_on_recovery(self) -> None:
+        file_id = self.storage.add_file(path="/a", file_hash="h")
+        self.storage.update_status(file_id, FileStatus.FAILED, error="boom")
+        self.storage.update_status(file_id, FileStatus.PARSING)
+        self.assertIsNone(self.storage.get_file(file_id).error)
+
+    def test_update_status_refreshes_updated_at(self) -> None:
+        file_id = self.storage.add_file(path="/a", file_hash="h")
+        before = self.storage.get_file(file_id).updated_at
+        time.sleep(1.1)  # CURRENT_TIMESTAMP has 1-second resolution
+        self.storage.update_status(file_id, FileStatus.PARSING)
+        after = self.storage.get_file(file_id).updated_at
+        self.assertGreater(after, before)
 
 
 if __name__ == "__main__":
