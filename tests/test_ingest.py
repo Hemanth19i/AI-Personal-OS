@@ -8,6 +8,7 @@ from aipos.hashing import sha256_file
 from aipos.ingest import process_file, register_file
 from aipos.storage import FileStatus, SQLiteStorage
 from tests.embedder_fakes import DeterministicEmbedder, FailingEmbedder, RecordingEmbedder
+from tests.ocr_fakes import FailingOcr, RecordingOcr
 from tests.pdf_fixtures import make_text_pdf, write_blank_pdf
 from tests.vector_store_fakes import FailingVectorStore, RecordingVectorStore
 
@@ -65,6 +66,10 @@ class ProcessFileTests(unittest.TestCase):
         self.storage.connect()
         self.embedder = DeterministicEmbedder()
         self.vectors = RecordingVectorStore()
+        # Default: OCR recovers nothing, so text-layer PDFs behave as before and
+        # a no-text PDF still reaches ready with no chunks. Individual tests
+        # swap in an OCR fake that returns text or raises.
+        self.ocr = RecordingOcr()
 
     def tearDown(self) -> None:
         self.storage.close()
@@ -76,19 +81,19 @@ class ProcessFileTests(unittest.TestCase):
     def test_text_pdf_becomes_ready(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage, self.embedder, self.vectors)
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)
         self.assertIs(self._status_of(sha256_file(pdf)), FileStatus.READY)
 
     def test_empty_pdf_becomes_ready(self) -> None:
         pdf = self.root / "blank.pdf"
         write_blank_pdf(pdf)
-        process_file(pdf, self.storage, self.embedder, self.vectors)
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)
         self.assertIs(self._status_of(sha256_file(pdf)), FileStatus.READY)
 
     def test_corrupted_pdf_becomes_failed_with_error(self) -> None:
         pdf = self.root / "bad.pdf"
         pdf.write_bytes(b"this is not a pdf at all")
-        process_file(pdf, self.storage, self.embedder, self.vectors)
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         self.assertIs(record.status, FileStatus.FAILED)
         self.assertTrue(record.error)  # a failure reason was recorded
@@ -96,14 +101,14 @@ class ProcessFileTests(unittest.TestCase):
     def test_non_pdf_stays_pending(self) -> None:
         txt = self.root / "note.txt"
         txt.write_text("just text", encoding="utf-8")
-        process_file(txt, self.storage, self.embedder, self.vectors)
+        process_file(txt, self.storage, self.embedder, self.vectors, self.ocr)
         self.assertIs(self._status_of(sha256_file(txt)), FileStatus.PENDING)
 
     def test_duplicate_pdf_is_skipped(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage, self.embedder, self.vectors)
-        process_file(pdf, self.storage, self.embedder, self.vectors)  # duplicate hash
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)  # dup hash
         rows = self.storage._require_connection().execute(
             "SELECT count(*) FROM files"
         ).fetchone()[0]
@@ -112,7 +117,7 @@ class ProcessFileTests(unittest.TestCase):
     def test_text_pdf_persists_chunks_and_stays_ready(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage, self.embedder, self.vectors)
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         self.assertIs(record.status, FileStatus.READY)
         self.assertGreaterEqual(len(self.storage.get_chunks(record.id)), 1)
@@ -121,7 +126,7 @@ class ProcessFileTests(unittest.TestCase):
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
         recorder = RecordingEmbedder()
-        process_file(pdf, self.storage, recorder, self.vectors)
+        process_file(pdf, self.storage, recorder, self.vectors, self.ocr)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         stored = self.storage.get_chunk_records(record.id)
         # exactly one batch, containing every stored chunk's text in order
@@ -132,7 +137,7 @@ class ProcessFileTests(unittest.TestCase):
     def test_embedding_failure_marks_file_failed(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage, FailingEmbedder(), self.vectors)
+        process_file(pdf, self.storage, FailingEmbedder(), self.vectors, self.ocr)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         self.assertIs(record.status, FileStatus.FAILED)
         self.assertTrue(record.error)
@@ -140,7 +145,7 @@ class ProcessFileTests(unittest.TestCase):
     def test_vectors_persisted_keyed_by_chunk_id(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage, self.embedder, self.vectors)
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         stored = self.storage.get_chunk_records(record.id)
         # one vector persisted per stored chunk, keyed by the chunk's db id
@@ -153,7 +158,39 @@ class ProcessFileTests(unittest.TestCase):
     def test_vector_persistence_failure_marks_file_failed(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage, self.embedder, FailingVectorStore())
+        process_file(pdf, self.storage, self.embedder, FailingVectorStore(), self.ocr)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.FAILED)
+        self.assertTrue(record.error)
+
+    def test_scanned_pdf_recovers_text_via_ocr(self) -> None:
+        # A PDF with no text layer stands in for a scanned document; OCR
+        # recovers its text, which must flow into stored chunks.
+        pdf = self.root / "scanned.pdf"
+        write_blank_pdf(pdf)
+        ocr = RecordingOcr("Recovered scanned text")
+        process_file(pdf, self.storage, self.embedder, self.vectors, ocr)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.READY)
+        self.assertEqual(len(ocr.calls), 1)  # OCR ran on the no-text PDF
+        chunks = self.storage.get_chunks(record.id)
+        self.assertTrue(chunks)
+        self.assertIn("Recovered scanned text", "".join(c.text for c in chunks))
+
+    def test_text_pdf_does_not_invoke_ocr(self) -> None:
+        # A PDF with an extractable text layer must never reach the OCR step.
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        ocr = RecordingOcr("SHOULD NOT APPEAR")
+        process_file(pdf, self.storage, self.embedder, self.vectors, ocr)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.READY)
+        self.assertEqual(ocr.calls, [])
+
+    def test_ocr_failure_marks_file_failed(self) -> None:
+        pdf = self.root / "scanned.pdf"
+        write_blank_pdf(pdf)
+        process_file(pdf, self.storage, self.embedder, self.vectors, FailingOcr())
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         self.assertIs(record.status, FileStatus.FAILED)
         self.assertTrue(record.error)

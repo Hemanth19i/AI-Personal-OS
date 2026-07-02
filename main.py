@@ -20,6 +20,7 @@ from pathlib import Path
 from aipos.config import load_config
 from aipos.embedding import OllamaEmbedder
 from aipos.ingest import process_file
+from aipos.ocr import TesseractOcr
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.sources import FolderSource
 from aipos.storage import SQLiteStorage
@@ -60,12 +61,16 @@ def main() -> None:
     logger.info("Vector store initialized at %s", vector_store_path(config))
 
     # Watch the configured folder; each file that passes the write-completion
-    # guard is registered and (if a PDF) parsed, chunked, persisted, embedded,
-    # and its vectors stored (T1.4 + T2.2..T2.6). FolderSource owns the watching
-    # and knows nothing of hashing, parsing, embedding, or storage.
+    # guard is registered and (if a PDF) parsed — with OCR fallback for scanned
+    # PDFs — chunked, persisted, embedded, and its vectors stored (T1.4 +
+    # T2.2..T2.7). FolderSource owns the watching and knows nothing of hashing,
+    # parsing, OCR, embedding, or storage.
     embedder = OllamaEmbedder(config.embedding_model)
+    ocr = TesseractOcr()
     source = FolderSource(config.watched_folder)
-    source.watch(lambda path: process_file(path, storage, embedder, vector_store))
+    source.watch(
+        lambda path: process_file(path, storage, embedder, vector_store, ocr)
+    )
 
     # flush=True: stdout is block-buffered when piped, and the process then
     # blocks in the watch loop, so flush the readiness banner immediately.

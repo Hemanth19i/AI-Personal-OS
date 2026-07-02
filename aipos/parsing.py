@@ -1,8 +1,9 @@
 """PDF text extraction for AI Personal OS.
 
-Extracts the text layer from a PDF and nothing else — no OCR (that is T2.5),
-no chunking, no persistence. Raises if the file cannot be read as a PDF so the
-ingestion coordinator can mark the file failed (Build Plan, text extraction).
+Extracts the text layer from a PDF and nothing else — no OCR (that lives in
+``aipos.ocr`` and the coordinator invokes it as a fallback), no chunking, no
+persistence. Raises if the file cannot be read as a PDF so the ingestion
+coordinator can mark the file failed (Build Plan, text extraction).
 """
 
 from __future__ import annotations

@@ -17,6 +17,7 @@ from pathlib import Path
 from aipos.chunking import chunk_text
 from aipos.embedding import Embedder
 from aipos.hashing import sha256_file
+from aipos.ocr import OcrEngine
 from aipos.parsing import parse_pdf
 from aipos.storage import FileRecord, FileStatus, SQLiteStorage
 from aipos.vector_store import VectorStore
@@ -46,13 +47,15 @@ def process_file(
     storage: SQLiteStorage,
     embedder: Embedder,
     vector_store: VectorStore,
+    ocr: OcrEngine,
 ) -> None:
     """Register a completed file and, if it is a PDF, process it.
 
-    Registration dedupes by content hash. A newly registered PDF is parsed,
-    chunked, its chunks persisted, one embedding generated per chunk, and each
-    embedding stored in the vector store keyed by chunk_id, driven through its
-    lifecycle: PARSING -> CHUNKING -> EMBEDDING -> READY on success, or FAILED
+    Registration dedupes by content hash. A newly registered PDF is parsed
+    (falling back to OCR when it has no text layer), chunked, its chunks
+    persisted, one embedding generated per chunk, and each embedding stored in
+    the vector store keyed by chunk_id, driven through its lifecycle:
+    PARSING -> [OCR] -> CHUNKING -> EMBEDDING -> READY on success, or FAILED
     (with the error recorded) on failure. Non-PDF files are left pending for a
     later parser (TXT/Markdown), and duplicates are skipped.
     """
@@ -61,7 +64,7 @@ def process_file(
         return  # duplicate content, already registered
     if path.suffix.lower() != ".pdf":
         return  # only PDFs are parsed in this ticket
-    _process_pdf(record.id, path, storage, embedder, vector_store)
+    _process_pdf(record.id, path, storage, embedder, vector_store, ocr)
 
 
 def _process_pdf(
@@ -70,6 +73,7 @@ def _process_pdf(
     storage: SQLiteStorage,
     embedder: Embedder,
     vector_store: VectorStore,
+    ocr: OcrEngine,
 ) -> None:
     storage.update_status(file_id, FileStatus.PARSING)
     try:
@@ -78,6 +82,17 @@ def _process_pdf(
         logger.exception("PDF parse failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
         return
+
+    if not text.strip():
+        # No extractable text layer — likely a scanned PDF. Recover text via
+        # OCR before chunking (Design Doc §A5, the `ocr` step).
+        storage.update_status(file_id, FileStatus.OCR)
+        try:
+            text = ocr.ocr_pdf(path)
+        except Exception as error:
+            logger.exception("OCR failed: %s", path)
+            storage.update_status(file_id, FileStatus.FAILED, error=str(error))
+            return
 
     storage.update_status(file_id, FileStatus.CHUNKING)
     try:

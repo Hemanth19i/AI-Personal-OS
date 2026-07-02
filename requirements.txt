@@ -14,3 +14,13 @@ ollama>=0.3
 
 # T2.6 — local vector store (ADR-015)
 lancedb>=0.5
+
+# T2.7 — OCR fallback for scanned PDFs (PRD §9 locks OCR to Tesseract).
+# pypdfium2 rasterizes pages (self-contained wheel — no Poppler); pytesseract
+# wraps the Tesseract CLI and needs Pillow for the page images. NOTE: the
+# Tesseract binary itself is a system prerequisite, e.g.
+#   Windows: winget install --id UB-Mannheim.TesseractOCR
+#   Debian/Ubuntu: apt install tesseract-ocr
+pypdfium2>=4.0
+pytesseract>=0.3.10
+Pillow>=10.0

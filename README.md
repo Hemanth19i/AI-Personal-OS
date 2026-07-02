@@ -13,11 +13,18 @@ those answers were produced.
 
 ## Status
 
-Phase 1 — **Milestone 1 complete** (T0.1–T1.4). The ingestion front door works
-end to end: a folder is watched, each new file is held until its write
-completes, then hashed (SHA-256) and registered in SQLite, skipping files whose
-content is already registered. Milestone 2 (parsing → chunks → vectors) is next.
-See the Build Plan for the ticket list.
+Phase 1 — **Milestone 2 complete** (T0.1–T2.7). The full ingestion lifecycle
+runs end to end: a watched folder holds each new file until its write completes,
+then hashes (SHA-256) and registers it in SQLite (skipping already-seen
+content). A registered PDF is parsed — falling back to Tesseract OCR when it has
+no text layer (a scanned document) — chunked, embedded via a local Ollama model,
+and its vectors written to LanceDB keyed by chunk id, reaching `ready`. Next up
+is Milestone 3 (ask a question, get a cited answer). See the Build Plan for the
+ticket list.
+
+OCR requires the Tesseract binary installed on the system (Windows:
+`winget install --id UB-Mannheim.TesseractOCR`; Debian/Ubuntu:
+`apt install tesseract-ocr`); the Python packages come from `requirements.txt`.
 
 ## Contract documents
 

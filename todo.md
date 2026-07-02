@@ -34,13 +34,17 @@ and ends in something you can run. Build top-to-bottom; don't skip ahead.
 
 ## Milestone 2 — Process into searchable chunks
 
-- [ ] **T2.1** Text extraction: PDF / TXT / Markdown (`pending → parsing → parsed`)
-- [ ] **T2.2** Chunking with page/offset metadata → `chunks` table (`→ chunked`)
-- [ ] **T2.3** Local embeddings (nomic-embed) for each chunk, via a lightweight Model Manager
-- [ ] **T2.4** Write vectors to LanceDB keyed by `chunk_id`, behind a minimal Index Manager (index/reindex only) (`→ ready`)
-- [ ] **T2.5** OCR fallback (Tesseract) for scanned PDFs with no text layer
+> Repo commits split this milestone finer than the Build Plan (T2.1 = a typed
+> file-lifecycle refactor; parsing/chunking/embedding/vectors ran as T2.2–T2.6;
+> OCR fallback shipped as T2.7). The Build-Plan tickets below map onto that work.
 
-> ✅ Win: drop a PDF/TXT/Markdown file — including a scanned PDF — and it reaches `ready` with vectors stored.
+- [x] **T2.1** Text extraction: PDF / TXT / Markdown (`pending → parsing → parsed`)
+- [x] **T2.2** Chunking with page/offset metadata → `chunks` table (`→ chunked`)
+- [x] **T2.3** Local embeddings (nomic-embed) for each chunk, via a lightweight Model Manager
+- [x] **T2.4** Write vectors to LanceDB keyed by `chunk_id`, behind a minimal Index Manager (index/reindex only) (`→ ready`)
+- [x] **T2.5** OCR fallback (Tesseract) for scanned PDFs with no text layer *(repo T2.7)*
+
+> ✅ Win: drop a PDF/TXT/Markdown file — including a scanned PDF — and it reaches `ready` with vectors stored. **Met.**
 
 ## Milestone 3 — Ask a question (vector RAG)
 
