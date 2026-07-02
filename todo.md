@@ -10,27 +10,27 @@ and ends in something you can run. Build top-to-bottom; don't skip ahead.
 
 ## 🎯 Tonight (the only thing that matters right now)
 
-- [ ] **T1.1** Create `files` table in SQLite (`id, workspace_id, path, hash, status, error, created_at, updated_at`; `workspace_id` hardcoded to `"default"`)
-- [ ] **T1.2** Watch a folder with `watchdog`; print the path of any new file
-- [ ] **T1.3** Wait for write-completion (size-stability) before processing
-- [ ] **T1.4** Hash (SHA-256) + insert a `pending` row; skip if hash already seen
+- [x] **T1.1** Create `files` table in SQLite (`id, workspace_id, path, hash, status, error, created_at, updated_at`; `workspace_id` hardcoded to `"default"`)
+- [x] **T1.2** Watch a folder with `watchdog`; print the path of any new file
+- [x] **T1.3** Wait for write-completion (size-stability) before processing
+- [x] **T1.4** Hash (SHA-256) + insert a `pending` row; skip if hash already seen
 
-> ✅ Win condition: drop a PDF → one row appears → drop it again → nothing happens.
+> ✅ Win condition: drop a PDF → one row appears → drop it again → nothing happens. **Met.**
 
 ---
 
 ## Milestone 0 — Skeleton
 
-- [ ] **T0.1** Repo + venv + deps file + `main.py` that runs
-- [ ] **T0.2** Config (watched folder, data dir, model names) + create data dirs on first run
-- [ ] **T0.3** `SourceAdapter` interface (Scan/Parse/Watch/Metadata/Delete) + `FolderSource` stub
+- [x] **T0.1** Repo + venv + deps file + `main.py` that runs
+- [x] **T0.2** Config (watched folder, data dir, model names) + create data dirs on first run
+- [x] **T0.3** `SourceAdapter` interface (Scan/Parse/Watch/Metadata/Delete) + `FolderSource` stub
 
 ## Milestone 1 — Ingest one file into SQLite
 
-- [ ] **T1.1** SQLite schema (incl. `workspace_id`, `error`) + thin data-access layer (no raw SQL elsewhere)
-- [ ] **T1.2** Folder watcher (`watchdog`)
-- [ ] **T1.3** Write-completion guard
-- [ ] **T1.4** Hash + register (dedup)
+- [x] **T1.1** SQLite schema (incl. `workspace_id`, `error`) + thin data-access layer (no raw SQL elsewhere)
+- [x] **T1.2** Folder watcher (`watchdog`)
+- [x] **T1.3** Write-completion guard
+- [x] **T1.4** Hash + register (dedup)
 
 ## Milestone 2 — Process into searchable chunks
 

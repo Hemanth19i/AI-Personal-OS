@@ -131,16 +131,22 @@ class FolderSource(SourceAdapter):
         """
 
         def forward(path: Path) -> None:
-            if wait_until_stable(
+            if not wait_until_stable(
                 path, poll_interval=self._poll_interval, timeout=self._timeout
             ):
-                on_file(path)
-            else:
                 logger.warning(
                     "File never stabilized within %.1fs; skipping: %s",
                     self._timeout,
                     path,
                 )
+                return
+            # Isolate the callback: a failure on one file must never escape into
+            # watchdog's dispatch thread (which would stop all further watching).
+            # Log with traceback and continue; do not swallow silently.
+            try:
+                on_file(path)
+            except Exception:
+                logger.exception("Error processing file; skipping: %s", path)
 
         return forward
 

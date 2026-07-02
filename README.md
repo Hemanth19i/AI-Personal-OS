@@ -13,8 +13,11 @@ those answers were produced.
 
 ## Status
 
-Phase 1 — Milestone 0 (project skeleton). See the Build Plan for the current
-ticket.
+Phase 1 — **Milestone 1 complete** (T0.1–T1.4). The ingestion front door works
+end to end: a folder is watched, each new file is held until its write
+completes, then hashed (SHA-256) and registered in SQLite, skipping files whose
+content is already registered. Milestone 2 (parsing → chunks → vectors) is next.
+See the Build Plan for the ticket list.
 
 ## Contract documents
 
@@ -41,8 +44,21 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Expected output:
+On startup it creates `config.toml`, the `data/` directory, and the SQLite
+database on first run, prints its readiness banner, then watches the configured
+folder until you stop it with Ctrl+C:
 
 ```
 AI Personal OS — alive
 ```
+
+Drop a PDF, TXT, or Markdown file into `data/watched/` and it is registered in
+the database once its write completes; dropping the same content again is
+skipped.
+
+## Running the tests
+
+```bash
+python -m unittest discover -s tests
+```
+
