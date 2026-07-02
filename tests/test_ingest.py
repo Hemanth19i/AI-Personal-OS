@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 from aipos.hashing import sha256_file
-from aipos.ingest import register_file
-from aipos.storage import SQLiteStorage
+from aipos.ingest import process_file, register_file
+from aipos.storage import FileStatus, SQLiteStorage
+from tests.pdf_fixtures import make_text_pdf, write_blank_pdf
 
 
 class RegisterFileTests(unittest.TestCase):
@@ -52,6 +53,57 @@ class RegisterFileTests(unittest.TestCase):
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
         self.assertNotEqual(first.id, second.id)
+
+
+class ProcessFileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.storage = SQLiteStorage(self.root / "aipos.db")
+        self.storage.connect()
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        self._tmp.cleanup()
+
+    def _status_of(self, hash_hex: str) -> FileStatus:
+        return self.storage.get_file_by_hash(hash_hex).status
+
+    def test_text_pdf_becomes_ready(self) -> None:
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(pdf, self.storage)
+        self.assertIs(self._status_of(sha256_file(pdf)), FileStatus.READY)
+
+    def test_empty_pdf_becomes_ready(self) -> None:
+        pdf = self.root / "blank.pdf"
+        write_blank_pdf(pdf)
+        process_file(pdf, self.storage)
+        self.assertIs(self._status_of(sha256_file(pdf)), FileStatus.READY)
+
+    def test_corrupted_pdf_becomes_failed_with_error(self) -> None:
+        pdf = self.root / "bad.pdf"
+        pdf.write_bytes(b"this is not a pdf at all")
+        process_file(pdf, self.storage)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.FAILED)
+        self.assertTrue(record.error)  # a failure reason was recorded
+
+    def test_non_pdf_stays_pending(self) -> None:
+        txt = self.root / "note.txt"
+        txt.write_text("just text", encoding="utf-8")
+        process_file(txt, self.storage)
+        self.assertIs(self._status_of(sha256_file(txt)), FileStatus.PENDING)
+
+    def test_duplicate_pdf_is_skipped(self) -> None:
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(pdf, self.storage)
+        process_file(pdf, self.storage)  # second call: duplicate hash
+        rows = self.storage._require_connection().execute(
+            "SELECT count(*) FROM files"
+        ).fetchone()[0]
+        self.assertEqual(rows, 1)
 
 
 if __name__ == "__main__":

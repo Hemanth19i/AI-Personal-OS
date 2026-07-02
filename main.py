@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from aipos.config import load_config
-from aipos.ingest import register_file
+from aipos.ingest import process_file
 from aipos.paths import database_path, ensure_app_directories
 from aipos.sources import FolderSource
 from aipos.storage import SQLiteStorage
@@ -53,10 +53,10 @@ def main() -> None:
     logger.info("SQLite storage initialized at %s (files table ensured)", db_path)
 
     # Watch the configured folder; each file that passes the write-completion
-    # guard is hashed and registered in SQLite (T1.4). FolderSource owns the
-    # watching and knows nothing of hashing or storage.
+    # guard is registered and (if a PDF) parsed (T1.4 + T2.2). FolderSource
+    # owns the watching and knows nothing of hashing, parsing, or storage.
     source = FolderSource(config.watched_folder)
-    source.watch(lambda path: register_file(path, storage))
+    source.watch(lambda path: process_file(path, storage))
 
     # flush=True: stdout is block-buffered when piped, and the process then
     # blocks in the watch loop, so flush the readiness banner immediately.

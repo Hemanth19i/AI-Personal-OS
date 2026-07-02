@@ -5,3 +5,6 @@
 
 # T1.2 — folder watching
 watchdog>=4.0
+
+# T2.2 — PDF text extraction
+pypdf>=4.0
