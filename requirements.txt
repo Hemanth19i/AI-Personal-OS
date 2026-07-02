@@ -11,3 +11,6 @@ pypdf>=4.0
 
 # T2.5 — local embeddings via Ollama (nomic-embed-text)
 ollama>=0.3
+
+# T2.6 — local vector store (ADR-015)
+lancedb>=0.5

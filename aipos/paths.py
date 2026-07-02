@@ -13,6 +13,7 @@ from pathlib import Path
 
 from aipos.config import AppConfig
 from aipos.storage import DATABASE_FILENAME
+from aipos.vector_store import VECTOR_STORE_DIRNAME
 
 logger = logging.getLogger(__name__)
 
@@ -30,3 +31,8 @@ def ensure_app_directories(config: AppConfig) -> None:
 def database_path(config: AppConfig) -> Path:
     """Absolute path to the SQLite database file, inside the data directory."""
     return config.data_dir / DATABASE_FILENAME
+
+
+def vector_store_path(config: AppConfig) -> Path:
+    """Absolute path to the LanceDB vector store directory, inside the data dir."""
+    return config.data_dir / VECTOR_STORE_DIRNAME

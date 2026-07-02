@@ -76,6 +76,15 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 
 @dataclass(frozen=True)
+class ChunkRecord:
+    """A persisted chunk: its database id plus its ordering index and text."""
+
+    id: int
+    index: int
+    text: str
+
+
+@dataclass(frozen=True)
 class FileRecord:
     """A row from the ``files`` table (Design Doc §A3)."""
 
@@ -202,6 +211,19 @@ class SQLiteStorage:
             (file_id,),
         ).fetchall()
         return [Chunk(index=row["chunk_index"], text=row["text"]) for row in rows]
+
+    def get_chunk_records(self, file_id: int) -> list[ChunkRecord]:
+        """Return a file's chunks with their database ids, ordered by index."""
+        connection = self._require_connection()
+        rows = connection.execute(
+            "SELECT id, chunk_index, text FROM chunks WHERE file_id = ? "
+            "ORDER BY chunk_index",
+            (file_id,),
+        ).fetchall()
+        return [
+            ChunkRecord(id=row["id"], index=row["chunk_index"], text=row["text"])
+            for row in rows
+        ]
 
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:

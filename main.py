@@ -20,9 +20,10 @@ from pathlib import Path
 from aipos.config import load_config
 from aipos.embedding import OllamaEmbedder
 from aipos.ingest import process_file
-from aipos.paths import database_path, ensure_app_directories
+from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.sources import FolderSource
 from aipos.storage import SQLiteStorage
+from aipos.vector_store import LanceVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,18 @@ def main() -> None:
     storage.connect()
     logger.info("SQLite storage initialized at %s (files table ensured)", db_path)
 
+    # Vector store: open (creating on first run) the local LanceDB database.
+    vector_store = LanceVectorStore(vector_store_path(config))
+    vector_store.connect()
+    logger.info("Vector store initialized at %s", vector_store_path(config))
+
     # Watch the configured folder; each file that passes the write-completion
-    # guard is registered and (if a PDF) parsed, chunked, persisted, and
-    # embedded (T1.4 + T2.2..T2.5). FolderSource owns the watching and knows
-    # nothing of hashing, parsing, embedding, or storage.
+    # guard is registered and (if a PDF) parsed, chunked, persisted, embedded,
+    # and its vectors stored (T1.4 + T2.2..T2.6). FolderSource owns the watching
+    # and knows nothing of hashing, parsing, embedding, or storage.
     embedder = OllamaEmbedder(config.embedding_model)
     source = FolderSource(config.watched_folder)
-    source.watch(lambda path: process_file(path, storage, embedder))
+    source.watch(lambda path: process_file(path, storage, embedder, vector_store))
 
     # flush=True: stdout is block-buffered when piped, and the process then
     # blocks in the watch loop, so flush the readiness banner immediately.
