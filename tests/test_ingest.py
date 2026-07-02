@@ -7,6 +7,7 @@ from pathlib import Path
 from aipos.hashing import sha256_file
 from aipos.ingest import process_file, register_file
 from aipos.storage import FileStatus, SQLiteStorage
+from tests.embedder_fakes import DeterministicEmbedder, FailingEmbedder, RecordingEmbedder
 from tests.pdf_fixtures import make_text_pdf, write_blank_pdf
 
 
@@ -61,6 +62,7 @@ class ProcessFileTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.storage = SQLiteStorage(self.root / "aipos.db")
         self.storage.connect()
+        self.embedder = DeterministicEmbedder()
 
     def tearDown(self) -> None:
         self.storage.close()
@@ -72,19 +74,19 @@ class ProcessFileTests(unittest.TestCase):
     def test_text_pdf_becomes_ready(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage)
+        process_file(pdf, self.storage, self.embedder)
         self.assertIs(self._status_of(sha256_file(pdf)), FileStatus.READY)
 
     def test_empty_pdf_becomes_ready(self) -> None:
         pdf = self.root / "blank.pdf"
         write_blank_pdf(pdf)
-        process_file(pdf, self.storage)
+        process_file(pdf, self.storage, self.embedder)
         self.assertIs(self._status_of(sha256_file(pdf)), FileStatus.READY)
 
     def test_corrupted_pdf_becomes_failed_with_error(self) -> None:
         pdf = self.root / "bad.pdf"
         pdf.write_bytes(b"this is not a pdf at all")
-        process_file(pdf, self.storage)
+        process_file(pdf, self.storage, self.embedder)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         self.assertIs(record.status, FileStatus.FAILED)
         self.assertTrue(record.error)  # a failure reason was recorded
@@ -92,14 +94,14 @@ class ProcessFileTests(unittest.TestCase):
     def test_non_pdf_stays_pending(self) -> None:
         txt = self.root / "note.txt"
         txt.write_text("just text", encoding="utf-8")
-        process_file(txt, self.storage)
+        process_file(txt, self.storage, self.embedder)
         self.assertIs(self._status_of(sha256_file(txt)), FileStatus.PENDING)
 
     def test_duplicate_pdf_is_skipped(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage)
-        process_file(pdf, self.storage)  # second call: duplicate hash
+        process_file(pdf, self.storage, self.embedder)
+        process_file(pdf, self.storage, self.embedder)  # second call: duplicate hash
         rows = self.storage._require_connection().execute(
             "SELECT count(*) FROM files"
         ).fetchone()[0]
@@ -108,10 +110,30 @@ class ProcessFileTests(unittest.TestCase):
     def test_text_pdf_persists_chunks_and_stays_ready(self) -> None:
         pdf = self.root / "doc.pdf"
         pdf.write_bytes(make_text_pdf("Hello World"))
-        process_file(pdf, self.storage)
+        process_file(pdf, self.storage, self.embedder)
         record = self.storage.get_file_by_hash(sha256_file(pdf))
         self.assertIs(record.status, FileStatus.READY)
         self.assertGreaterEqual(len(self.storage.get_chunks(record.id)), 1)
+
+    def test_one_embedding_generated_per_stored_chunk(self) -> None:
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        recorder = RecordingEmbedder()
+        process_file(pdf, self.storage, recorder)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        stored = self.storage.get_chunks(record.id)
+        # exactly one batch, containing every stored chunk's text in order
+        self.assertEqual(len(recorder.calls), 1)
+        self.assertEqual(recorder.calls[0], [chunk.text for chunk in stored])
+        self.assertIs(record.status, FileStatus.READY)
+
+    def test_embedding_failure_marks_file_failed(self) -> None:
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(pdf, self.storage, FailingEmbedder())
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.FAILED)
+        self.assertTrue(record.error)
 
 
 if __name__ == "__main__":

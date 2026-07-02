@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 
 from aipos.chunking import chunk_text
+from aipos.embedding import Embedder
 from aipos.hashing import sha256_file
 from aipos.parsing import parse_pdf
 from aipos.storage import FileRecord, FileStatus, SQLiteStorage
@@ -39,24 +40,26 @@ def register_file(path: Path, storage: SQLiteStorage) -> FileRecord | None:
     return storage.get_file(file_id)
 
 
-def process_file(path: Path, storage: SQLiteStorage) -> None:
-    """Register a completed file and, if it is a PDF, parse it.
+def process_file(path: Path, storage: SQLiteStorage, embedder: Embedder) -> None:
+    """Register a completed file and, if it is a PDF, process it.
 
     Registration dedupes by content hash. A newly registered PDF is parsed,
-    chunked, and its chunks persisted, driven through its lifecycle:
-    PARSING -> CHUNKING -> READY on success, or FAILED (with the error recorded)
-    on failure. Non-PDF files are left pending for a later parser (TXT/Markdown),
-    and duplicates are skipped.
+    chunked, its chunks persisted, and one embedding generated per chunk,
+    driven through its lifecycle: PARSING -> CHUNKING -> EMBEDDING -> READY on
+    success, or FAILED (with the error recorded) on failure. Non-PDF files are
+    left pending for a later parser (TXT/Markdown), and duplicates are skipped.
     """
     record = register_file(path, storage)
     if record is None:
         return  # duplicate content, already registered
     if path.suffix.lower() != ".pdf":
         return  # only PDFs are parsed in this ticket
-    _process_pdf(record.id, path, storage)
+    _process_pdf(record.id, path, storage, embedder)
 
 
-def _process_pdf(file_id: int, path: Path, storage: SQLiteStorage) -> None:
+def _process_pdf(
+    file_id: int, path: Path, storage: SQLiteStorage, embedder: Embedder
+) -> None:
     storage.update_status(file_id, FileStatus.PARSING)
     try:
         text = parse_pdf(path)
@@ -74,5 +77,21 @@ def _process_pdf(file_id: int, path: Path, storage: SQLiteStorage) -> None:
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
         return
 
+    storage.update_status(file_id, FileStatus.EMBEDDING)
+    try:
+        # One embedding per stored chunk. Persisting vectors (to LanceDB, keyed
+        # by chunk_id) is the next ticket, so the vectors are not stored yet.
+        embeddings = embedder.embed([chunk.text for chunk in chunks])
+    except Exception as error:
+        logger.exception("Embedding failed: %s", path)
+        storage.update_status(file_id, FileStatus.FAILED, error=str(error))
+        return
+
     storage.update_status(file_id, FileStatus.READY)
-    logger.info("Processed PDF id=%d (%d chunk(s) stored): %s", file_id, len(chunks), path)
+    logger.info(
+        "Processed PDF id=%d (%d chunk(s), %d embedding(s)): %s",
+        file_id,
+        len(chunks),
+        len(embeddings),
+        path,
+    )
