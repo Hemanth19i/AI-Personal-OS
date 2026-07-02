@@ -63,6 +63,37 @@ class LanceVectorStoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             disconnected.add([(1, [0.1])])
 
+    # --- search (read path, T3.1) ---
+
+    def test_search_returns_nearest_first(self) -> None:
+        self.store.add([(1, [0.0, 0.0]), (2, [1.0, 0.0]), (3, [5.0, 5.0])])
+        hits = self.store.search([0.9, 0.0], k=3)
+        self.assertEqual([chunk_id for chunk_id, _ in hits], [2, 1, 3])
+        # distances are ascending (nearest first)
+        distances = [dist for _, dist in hits]
+        self.assertEqual(distances, sorted(distances))
+
+    def test_search_limits_to_k(self) -> None:
+        self.store.add([(i, [float(i), 0.0]) for i in range(1, 6)])
+        self.assertEqual(len(self.store.search([0.0, 0.0], k=2)), 2)
+
+    def test_search_missing_table_returns_empty(self) -> None:
+        # Nothing indexed yet — no table exists.
+        self.assertEqual(self.store.search([0.1, 0.2], k=3), [])
+
+    def test_search_nonpositive_k_raises(self) -> None:
+        self.store.add([(1, [0.1, 0.2])])
+        for bad in (0, -1):
+            with self.assertRaises(ValueError):
+                self.store.search([0.1, 0.2], k=bad)
+
+    def test_search_is_read_only(self) -> None:
+        self.store.add([(1, [0.1, 0.2]), (2, [0.3, 0.4])])
+        before = lancedb.connect(str(self.path)).open_table("chunk_vectors").count_rows()
+        self.store.search([0.1, 0.2], k=2)
+        after = lancedb.connect(str(self.path)).open_table("chunk_vectors").count_rows()
+        self.assertEqual(before, after)  # search mutated nothing
+
 
 if __name__ == "__main__":
     unittest.main()

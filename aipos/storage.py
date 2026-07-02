@@ -225,6 +225,27 @@ class SQLiteStorage:
             for row in rows
         ]
 
+    def get_chunks_by_ids(self, chunk_ids: list[int]) -> list[ChunkRecord]:
+        """Return chunk records for the given ids; unmatched ids are omitted.
+
+        A read-only lookup used by the retrieval read-path (T3.1) to hydrate
+        chunk text for vector-search hits. Order is unspecified — callers that
+        need a ranking (e.g. by search distance) reorder by id themselves. An
+        empty ``chunk_ids`` list returns no rows without touching the database.
+        """
+        if not chunk_ids:
+            return []
+        connection = self._require_connection()
+        placeholders = ",".join("?" for _ in chunk_ids)
+        rows = connection.execute(
+            f"SELECT id, chunk_index, text FROM chunks WHERE id IN ({placeholders})",
+            tuple(chunk_ids),
+        ).fetchall()
+        return [
+            ChunkRecord(id=row["id"], index=row["chunk_index"], text=row["text"])
+            for row in rows
+        ]
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise RuntimeError("Storage is not connected; call connect() first")

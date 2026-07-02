@@ -50,6 +50,25 @@ class ChunkStorageTests(unittest.TestCase):
     def test_get_chunks_for_unknown_file_is_empty(self) -> None:
         self.assertEqual(self.storage.get_chunks(9999), [])
 
+    # --- get_chunks_by_ids (retrieval hydration, T3.1) ---
+
+    def test_get_chunks_by_ids_returns_matching_records(self) -> None:
+        self.storage.add_chunks(self.file_id, [Chunk(0, "a"), Chunk(1, "b"), Chunk(2, "c")])
+        stored = self.storage.get_chunk_records(self.file_id)
+        wanted = [stored[2].id, stored[0].id]
+        got = {r.id: r.text for r in self.storage.get_chunks_by_ids(wanted)}
+        self.assertEqual(got, {stored[2].id: "c", stored[0].id: "a"})
+
+    def test_get_chunks_by_ids_omits_unknown_ids(self) -> None:
+        self.storage.add_chunks(self.file_id, [Chunk(0, "only")])
+        stored = self.storage.get_chunk_records(self.file_id)
+        got = self.storage.get_chunks_by_ids([stored[0].id, 999999])
+        self.assertEqual([r.id for r in got], [stored[0].id])
+
+    def test_get_chunks_by_ids_empty_list_returns_empty(self) -> None:
+        self.storage.add_chunks(self.file_id, [Chunk(0, "x")])
+        self.assertEqual(self.storage.get_chunks_by_ids([]), [])
+
 
 if __name__ == "__main__":
     unittest.main()
