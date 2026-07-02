@@ -4,9 +4,10 @@ Phase 1 skeleton. On startup it loads configuration (generating a default
 config file on first run), ensures the local data directories exist, and
 initializes the SQLite storage layer (creating the database and schema on
 first run). It then starts watching the configured folder and runs until
-interrupted (Ctrl+C), logging each newly created file. A fresh clone can run
-``python main.py`` with no manual setup. Real behaviour (ingestion, retrieval,
-reasoning) is introduced in later milestones per the Build Plan.
+interrupted (Ctrl+C); each completed file is hashed and registered in SQLite.
+A fresh clone can run ``python main.py`` with no manual setup. Further
+behaviour (parsing, retrieval, reasoning) is introduced in later milestones
+per the Build Plan.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 
 from aipos.config import load_config
+from aipos.ingest import register_file
 from aipos.paths import database_path, ensure_app_directories
 from aipos.sources import FolderSource
 from aipos.storage import SQLiteStorage
@@ -43,17 +45,18 @@ def main() -> None:
     logger.info("Data directory: %s", config.data_dir)
     logger.info("Watched folder: %s", config.watched_folder)
 
-    # Initialize storage: connect (creating the database and files table on
-    # first run) and close cleanly. No data is inserted here.
+    # Storage stays open for the watch lifetime so completed files can be
+    # registered; it is closed in the finally below.
     db_path = database_path(config)
-    with SQLiteStorage(db_path):
-        logger.info("SQLite storage initialized at %s (files table ensured)", db_path)
+    storage = SQLiteStorage(db_path)
+    storage.connect()
+    logger.info("SQLite storage initialized at %s (files table ensured)", db_path)
 
-    # Start watching the configured folder for new files (T1.2). FolderSource
-    # owns the watching; main only starts it, reports each path, and stops it
-    # cleanly on shutdown. No ingestion happens here — detection only.
+    # Watch the configured folder; each file that passes the write-completion
+    # guard is hashed and registered in SQLite (T1.4). FolderSource owns the
+    # watching and knows nothing of hashing or storage.
     source = FolderSource(config.watched_folder)
-    source.watch(lambda path: logger.info("New file detected: %s", path))
+    source.watch(lambda path: register_file(path, storage))
 
     # flush=True: stdout is block-buffered when piped, and the process then
     # blocks in the watch loop, so flush the readiness banner immediately.
@@ -66,6 +69,7 @@ def main() -> None:
         logger.info("Shutdown requested")
     finally:
         source.stop()
+        storage.close()
 
 
 if __name__ == "__main__":

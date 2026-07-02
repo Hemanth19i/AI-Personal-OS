@@ -72,7 +72,10 @@ class SQLiteStorage:
     def connect(self) -> None:
         """Open the database connection and ensure the schema exists."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self._db_path)
+        # check_same_thread=False: the connection is opened on the main thread
+        # but used from watchdog's dispatch thread during ingestion. watchdog
+        # serializes callbacks, so access is single-threaded at any moment.
+        connection = sqlite3.connect(self._db_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.executescript(_SCHEMA)
         connection.commit()
@@ -118,6 +121,16 @@ class SQLiteStorage:
             "SELECT id, workspace_id, path, hash, status, error, "
             "created_at, updated_at FROM files WHERE id = ?",
             (file_id,),
+        ).fetchone()
+        return _to_record(row) if row is not None else None
+
+    def get_file_by_hash(self, file_hash: str) -> FileRecord | None:
+        """Return a registered file with the given hash, or None if unseen."""
+        connection = self._require_connection()
+        row = connection.execute(
+            "SELECT id, workspace_id, path, hash, status, error, "
+            "created_at, updated_at FROM files WHERE hash = ? LIMIT 1",
+            (file_hash,),
         ).fetchone()
         return _to_record(row) if row is not None else None
 
