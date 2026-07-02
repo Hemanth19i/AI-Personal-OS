@@ -42,10 +42,11 @@ def register_file(path: Path, storage: SQLiteStorage) -> FileRecord | None:
 def process_file(path: Path, storage: SQLiteStorage) -> None:
     """Register a completed file and, if it is a PDF, parse it.
 
-    Registration dedupes by content hash. A newly registered PDF is parsed and
-    chunked, driven through its lifecycle: PARSING -> CHUNKING -> READY on
-    success, or FAILED (with the error recorded) on failure. Non-PDF files are
-    left pending for a later parser (TXT/Markdown), and duplicates are skipped.
+    Registration dedupes by content hash. A newly registered PDF is parsed,
+    chunked, and its chunks persisted, driven through its lifecycle:
+    PARSING -> CHUNKING -> READY on success, or FAILED (with the error recorded)
+    on failure. Non-PDF files are left pending for a later parser (TXT/Markdown),
+    and duplicates are skipped.
     """
     record = register_file(path, storage)
     if record is None:
@@ -66,13 +67,12 @@ def _process_pdf(file_id: int, path: Path, storage: SQLiteStorage) -> None:
 
     storage.update_status(file_id, FileStatus.CHUNKING)
     try:
-        # Chunks are generated to drive the lifecycle; persisting them is a
-        # later ticket, so the result is used only to report the count.
         chunks = chunk_text(text)
+        storage.add_chunks(file_id, chunks)
     except Exception as error:
-        logger.exception("Chunking failed: %s", path)
+        logger.exception("Chunking/persistence failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
         return
 
     storage.update_status(file_id, FileStatus.READY)
-    logger.info("Processed PDF id=%d (%d chunk(s)): %s", file_id, len(chunks), path)
+    logger.info("Processed PDF id=%d (%d chunk(s) stored): %s", file_id, len(chunks), path)

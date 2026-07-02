@@ -4,19 +4,22 @@ The single owner of the SQLite database and the only module that writes SQL
 (ADR-006, ADR-009, Design Doc §A2/§A4). Every other layer goes through the
 ``SQLiteStorage`` API and never touches the database directly.
 
-Phase 1 (Build Plan T1.1) creates the ``files`` table — the per-file record
-that anchors the ingestion state machine — and exposes minimal typed
-data-access methods to insert and read rows. Chunk/entity/edge tables and the
-rest of the file lifecycle arrive in later milestones.
+Phase 1 creates the ``files`` table (T1.1) — the per-file record that anchors
+the ingestion state machine — and the ``chunks`` table (T2.4). It exposes
+minimal typed data-access methods to read/write both. Entity/edge tables and
+the rest of the file lifecycle arrive in later milestones.
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+
+from aipos.chunking import Chunk
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,16 @@ CREATE TABLE IF NOT EXISTS files (
     created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id          INTEGER PRIMARY KEY,
+    file_id     INTEGER NOT NULL REFERENCES files(id),
+    chunk_index INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    page        INTEGER,
+    position    INTEGER,
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -95,6 +108,7 @@ class SQLiteStorage:
         # serializes callbacks, so access is single-threaded at any moment.
         connection = sqlite3.connect(self._db_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")  # enforce chunks -> files
         connection.executescript(_SCHEMA)
         connection.commit()
         self._connection = connection
@@ -169,6 +183,25 @@ class SQLiteStorage:
             (status, error, file_id),
         )
         connection.commit()
+
+    def add_chunks(self, file_id: int, chunks: Iterable[Chunk]) -> None:
+        """Persist a file's chunks. Page/position are deferred (left NULL)."""
+        connection = self._require_connection()
+        connection.executemany(
+            "INSERT INTO chunks (file_id, chunk_index, text) VALUES (?, ?, ?)",
+            [(file_id, chunk.index, chunk.text) for chunk in chunks],
+        )
+        connection.commit()
+
+    def get_chunks(self, file_id: int) -> list[Chunk]:
+        """Return a file's chunks ordered by chunk index."""
+        connection = self._require_connection()
+        rows = connection.execute(
+            "SELECT chunk_index, text FROM chunks WHERE file_id = ? "
+            "ORDER BY chunk_index",
+            (file_id,),
+        ).fetchall()
+        return [Chunk(index=row["chunk_index"], text=row["text"]) for row in rows]
 
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:

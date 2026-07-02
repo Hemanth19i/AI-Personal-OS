@@ -105,6 +105,14 @@ class ProcessFileTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(rows, 1)
 
+    def test_text_pdf_persists_chunks_and_stays_ready(self) -> None:
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(pdf, self.storage)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.READY)
+        self.assertGreaterEqual(len(self.storage.get_chunks(record.id)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

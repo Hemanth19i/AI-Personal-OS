@@ -118,8 +118,12 @@ files(
 --           extracting, verifying, ready, failed}
 
 chunks(
-  id, file_id, text, page, position, created_at
+  id, file_id, chunk_index, text, page, position, created_at
 )
+-- chunk_index = 0-based ordinal position of the chunk within its file
+--   (defines chunk ordering). page/position = source location (page number,
+--   character offset) for citations; populated once the parser preserves
+--   page boundaries (see A2a). Added in T2.4 as an architectural correction.
 
 entities(
   id, workspace_id, name, type, created_at

@@ -71,7 +71,9 @@ text extracted and logged.
 
 **T2.2 — Chunking**
 Split extracted text into overlapping chunks, keeping page/offset metadata. Store chunks in a
-`chunks` table (`id, file_id, text, page, position`). Status → `chunked`. *Done when:* you can list
+`chunks` table (`id, file_id, chunk_index, text, page, position`) — `chunk_index` is the 0-based
+ordinal that defines ordering; page/position are source location. Status → `chunked`. *Done when:*
+you can list
 the chunks for a file with their page numbers.
 
 **T2.3 — Local embeddings**
