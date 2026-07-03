@@ -85,6 +85,14 @@ class ChunkRecord:
 
 
 @dataclass(frozen=True)
+class ChunkSource:
+    """A chunk's citation origin: its id and the path of the file it came from."""
+
+    chunk_id: int
+    file_path: str
+
+
+@dataclass(frozen=True)
 class FileRecord:
     """A row from the ``files`` table (Design Doc §A3)."""
 
@@ -243,6 +251,29 @@ class SQLiteStorage:
         ).fetchall()
         return [
             ChunkRecord(id=row["id"], index=row["chunk_index"], text=row["text"])
+            for row in rows
+        ]
+
+    def get_chunk_sources(self, chunk_ids: list[int]) -> list[ChunkSource]:
+        """Return (chunk_id, file_path) for the given ids; unmatched ids omitted.
+
+        A read-only join of ``chunks`` to ``files`` used by the answer read-path
+        (T3.3) to resolve which source file each cited chunk came from. Order is
+        unspecified — callers reorder as needed. An empty list returns no rows
+        without touching the database.
+        """
+        if not chunk_ids:
+            return []
+        connection = self._require_connection()
+        placeholders = ",".join("?" for _ in chunk_ids)
+        rows = connection.execute(
+            "SELECT c.id AS chunk_id, f.path AS file_path "
+            "FROM chunks c JOIN files f ON c.file_id = f.id "
+            f"WHERE c.id IN ({placeholders})",
+            tuple(chunk_ids),
+        ).fetchall()
+        return [
+            ChunkSource(chunk_id=row["chunk_id"], file_path=row["file_path"])
             for row in rows
         ]
 
