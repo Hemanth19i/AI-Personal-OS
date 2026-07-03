@@ -69,6 +69,29 @@ class ChunkStorageTests(unittest.TestCase):
         self.storage.add_chunks(self.file_id, [Chunk(0, "x")])
         self.assertEqual(self.storage.get_chunks_by_ids([]), [])
 
+    # --- get_chunk_sources (citation lookup, T3.3) ---
+
+    def test_get_chunk_sources_resolves_file_paths(self) -> None:
+        other_id = self.storage.add_file(path="/docs/other.pdf", file_hash="h2")
+        self.storage.add_chunks(self.file_id, [Chunk(0, "mine")])
+        self.storage.add_chunks(other_id, [Chunk(0, "theirs")])
+        records = self.storage.get_chunk_records(self.file_id)
+        records += self.storage.get_chunk_records(other_id)
+        ids = [r.id for r in records]
+        got = {s.chunk_id: s.file_path for s in self.storage.get_chunk_sources(ids)}
+        self.assertEqual(got[records[0].id], "/doc.pdf")
+        self.assertEqual(got[records[1].id], "/docs/other.pdf")
+
+    def test_get_chunk_sources_omits_unknown_ids(self) -> None:
+        self.storage.add_chunks(self.file_id, [Chunk(0, "x")])
+        real_id = self.storage.get_chunk_records(self.file_id)[0].id
+        got = self.storage.get_chunk_sources([real_id, 999999])
+        self.assertEqual([s.chunk_id for s in got], [real_id])
+
+    def test_get_chunk_sources_empty_list_returns_empty(self) -> None:
+        self.storage.add_chunks(self.file_id, [Chunk(0, "x")])
+        self.assertEqual(self.storage.get_chunk_sources([]), [])
+
 
 if __name__ == "__main__":
     unittest.main()
