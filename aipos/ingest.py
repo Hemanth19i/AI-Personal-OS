@@ -56,8 +56,8 @@ def process_file(
     Registration dedupes by content hash. A newly registered PDF is parsed
     (falling back to OCR when it has no text layer), chunked, its chunks
     persisted, one embedding generated per chunk and stored in the vector store
-    keyed by chunk_id, then its entities and relationships extracted, driven
-    through its lifecycle:
+    keyed by chunk_id, then its entities and relationships extracted and
+    persisted to the knowledge graph, driven through its lifecycle:
     PARSING -> [OCR] -> CHUNKING -> EMBEDDING -> EXTRACTING -> READY on success,
     or FAILED (with the error recorded) on failure. Non-PDF files are left
     pending for a later parser (TXT/Markdown), and duplicates are skipped.
@@ -119,22 +119,27 @@ def _process_pdf(
 
     storage.update_status(file_id, FileStatus.EXTRACTING)
     try:
-        # Extract entities and relationships per stored chunk (T4.1, the
-        # `extracting` lifecycle step, Design Doc §A5). Extraction runs at chunk
-        # granularity — over each ChunkRecord.text, not the concatenated
-        # document — so later milestones (T4.2–T4.4) can attach chunk-level
-        # provenance for GraphRAG, graph retrieval, and neighbour expansion. The
-        # results are surfaced via logging here; persisting them to the frozen
-        # entities/edges tables is T4.2 and is intentionally not done yet (see
-        # Remaining Technical Debt).
+        # Extract entities and relationships per stored chunk (T4.1) and persist
+        # them to the SQLite-backed knowledge graph (T4.2) — together the
+        # `extracting` lifecycle step (Design Doc §A5/§A4). Extraction runs at
+        # chunk granularity, so a relationship's weight counts how many chunks
+        # produced it; storage upserts entities and edges on their identity
+        # (accumulating edge weight) and resolves edge endpoints to ids.
+        # Provenance (which chunk an entity came from) is
+        # deferred — the frozen schema has no column for it (see Remaining
+        # Technical Debt).
         extractions = [extractor.extract(record.text) for record in records]
+        entities = [entity for result in extractions for entity in result.entities]
+        relationships = [
+            relationship
+            for result in extractions
+            for relationship in result.relationships
+        ]
+        storage.add_graph(entities, relationships)
     except Exception as error:
-        logger.exception("Entity extraction failed: %s", path)
+        logger.exception("Entity extraction/persistence failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
         return
-
-    entity_count = sum(len(result.entities) for result in extractions)
-    relationship_count = sum(len(result.relationships) for result in extractions)
 
     storage.update_status(file_id, FileStatus.READY)
     logger.info(
@@ -143,7 +148,7 @@ def _process_pdf(
         file_id,
         len(records),
         len(vectors),
-        entity_count,
-        relationship_count,
+        len(entities),
+        len(relationships),
         path,
     )

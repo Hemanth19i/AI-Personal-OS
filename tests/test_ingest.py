@@ -8,10 +8,17 @@ from aipos.hashing import sha256_file
 from aipos.ingest import process_file, register_file
 from aipos.storage import FileStatus, SQLiteStorage
 from tests.embedder_fakes import DeterministicEmbedder, FailingEmbedder, RecordingEmbedder
-from tests.extractor_fakes import FailingExtractor, RecordingExtractor
+from tests.extractor_fakes import SAMPLE_RESULT, FailingExtractor, RecordingExtractor
 from tests.ocr_fakes import FailingOcr, RecordingOcr
 from tests.pdf_fixtures import make_text_pdf, write_blank_pdf
 from tests.vector_store_fakes import FailingVectorStore, RecordingVectorStore
+
+
+class _GraphFailingStorage(SQLiteStorage):
+    """SQLiteStorage whose graph persistence always fails (isolation testing)."""
+
+    def add_graph(self, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("graph persistence unavailable")
 
 
 class RegisterFileTests(unittest.TestCase):
@@ -265,6 +272,70 @@ class ProcessFileTests(unittest.TestCase):
         process_file(good, self.storage, self.embedder, self.vectors, self.ocr, self.extractor)
         self.assertIs(self._status_of(sha256_file(bad)), FileStatus.FAILED)
         self.assertIs(self._status_of(sha256_file(good)), FileStatus.READY)
+
+    # --- graph persistence during EXTRACTING (T4.2) ---
+
+    def test_ingestion_persists_extracted_graph(self) -> None:
+        # The extracted entities/relationships are persisted and queryable, and
+        # the file reaches ready.
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(
+            pdf, self.storage, self.embedder, self.vectors, self.ocr,
+            RecordingExtractor(SAMPLE_RESULT),
+        )
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.READY)
+        alice = self.storage.get_entity_by_name("Alice")
+        ztna = self.storage.get_entity_by_name("ZTNA")
+        self.assertIsNotNone(alice)
+        self.assertIsNotNone(ztna)
+        self.assertIn(ztna.id, [n.id for n in self.storage.get_neighbors(alice.id)])
+
+    def test_ingestion_edge_weight_matches_chunk_count(self) -> None:
+        # SAMPLE_RESULT is returned for every chunk, so the single triple's
+        # weight equals the number of stored chunks.
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(
+            pdf, self.storage, self.embedder, self.vectors, self.ocr,
+            RecordingExtractor(SAMPLE_RESULT),
+        )
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        chunk_count = len(self.storage.get_chunk_records(record.id))
+        edges = self.storage.get_edges()
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0].weight, chunk_count)
+
+    def test_ingestion_with_no_entities_stays_ready_with_empty_graph(self) -> None:
+        # The default RecordingExtractor returns an empty result: the file still
+        # reaches ready and no graph rows are written.
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        process_file(pdf, self.storage, self.embedder, self.vectors, self.ocr, self.extractor)
+        record = self.storage.get_file_by_hash(sha256_file(pdf))
+        self.assertIs(record.status, FileStatus.READY)
+        self.assertEqual(self.storage.get_edges(), [])
+        self.assertIsNone(self.storage.get_entity_by_name("Alice"))
+
+    def test_graph_persistence_failure_marks_file_failed(self) -> None:
+        # A persistence failure during EXTRACTING behaves like any other stage
+        # failure: FAILED with the error recorded, and embedding already ran.
+        storage = _GraphFailingStorage(self.root / "fail.db")
+        storage.connect()
+        try:
+            pdf = self.root / "doc.pdf"
+            pdf.write_bytes(make_text_pdf("Hello World"))
+            process_file(
+                pdf, storage, self.embedder, self.vectors, self.ocr,
+                RecordingExtractor(SAMPLE_RESULT),
+            )
+            record = storage.get_file_by_hash(sha256_file(pdf))
+            self.assertIs(record.status, FileStatus.FAILED)
+            self.assertTrue(record.error)
+            self.assertTrue(storage.get_chunk_records(record.id))  # embedding ran first
+        finally:
+            storage.close()
 
 
 if __name__ == "__main__":
