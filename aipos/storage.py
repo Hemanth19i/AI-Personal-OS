@@ -5,9 +5,11 @@ The single owner of the SQLite database and the only module that writes SQL
 ``SQLiteStorage`` API and never touches the database directly.
 
 Phase 1 creates the ``files`` table (T1.1) — the per-file record that anchors
-the ingestion state machine — and the ``chunks`` table (T2.4). It exposes
-minimal typed data-access methods to read/write both. Entity/edge tables and
-the rest of the file lifecycle arrive in later milestones.
+the ingestion state machine — the ``chunks`` table (T2.4), and the
+``entities``/``edges`` knowledge-graph tables (T4.2). It exposes minimal typed
+data-access methods to read/write them. The Phase 1 graph is SQLite-backed
+(Kùzu was considered and deferred, Design Doc §A4/§9): entities/edges are plain
+SQLite tables here, so all graph SQL stays in this single owner.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from aipos.chunking import Chunk
+from aipos.extraction import Entity, Relationship
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,25 @@ CREATE TABLE IF NOT EXISTS chunks (
     position    INTEGER,
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS entities (
+    id           INTEGER PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    type         TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (workspace_id, name, type)
+);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id               INTEGER PRIMARY KEY,
+    workspace_id     TEXT NOT NULL,
+    source_entity_id INTEGER NOT NULL REFERENCES entities(id),
+    target_entity_id INTEGER NOT NULL REFERENCES entities(id),
+    relation         TEXT NOT NULL,
+    weight           INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (workspace_id, source_entity_id, target_entity_id, relation)
+);
 """
 
 
@@ -106,11 +128,38 @@ class FileRecord:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class EntityRecord:
+    """A node from the ``entities`` table (Design Doc §A4)."""
+
+    id: int
+    workspace_id: str
+    name: str
+    type: str
+
+
+@dataclass(frozen=True)
+class EdgeRecord:
+    """An edge from the ``edges`` table (Design Doc §A4).
+
+    There is one edge per (source, target, relation) in a workspace; ``weight``
+    accumulates how many chunks — across every file in the workspace — produced
+    that identical triple, i.e. the relationship's workspace-level strength.
+    """
+
+    id: int
+    source_entity_id: int
+    target_entity_id: int
+    relation: str
+    weight: int
+
+
 class SQLiteStorage:
     """Owns the SQLite connection and all SQL for AI Personal OS.
 
     Named for its engine so it reads clearly alongside the other Phase 1
-    storage engines added in later milestones (LanceDB at T2.4, Kùzu at T4.2).
+    storage engine (LanceDB at T2.4); the T4.2 knowledge graph is SQLite-backed
+    and therefore lives here too, rather than in a separate engine module.
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -277,6 +326,128 @@ class SQLiteStorage:
             for row in rows
         ]
 
+    def add_graph(
+        self,
+        entities: Iterable[Entity],
+        relationships: Iterable[Relationship],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Persist a file's extracted entities and relationships (T4.2, §A4).
+
+        Entities are upserted on their (workspace_id, name, type) identity with
+        ``INSERT OR IGNORE`` — the UNIQUE constraint makes re-inserting the same
+        entity a no-op, so identity is deterministic and safe for concurrent
+        workers. Relationships are aggregated by their (source, target,
+        relation) triple into an occurrence ``weight`` (how many chunks the
+        triple appeared in); their endpoint names are resolved to entity ids.
+        An edge whose endpoints do not resolve to persisted entities is skipped
+        — entities are never fabricated (frozen schema, no provenance).
+
+        Edges are likewise upserted on their (workspace_id, source, target,
+        relation) identity: a repeated relationship — across chunks or across
+        files — collapses into a single workspace edge whose weight accumulates
+        (``weight = weight + excluded.weight``), so the graph holds one edge per
+        relationship with a workspace-level strength. One commit, mirroring the
+        other write methods.
+        """
+        connection = self._require_connection()
+        connection.executemany(
+            "INSERT OR IGNORE INTO entities (workspace_id, name, type) "
+            "VALUES (?, ?, ?)",
+            [(workspace_id, entity.name, entity.type) for entity in entities],
+        )
+
+        weights: dict[tuple[str, str, str], int] = {}
+        for relationship in relationships:
+            key = (relationship.source, relationship.target, relationship.relation)
+            weights[key] = weights.get(key, 0) + 1
+
+        endpoint_names = {
+            name for (source, target, _) in weights for name in (source, target)
+        }
+        id_by_name = self._resolve_entity_ids(connection, workspace_id, endpoint_names)
+
+        edge_rows = []
+        for (source, target, relation), weight in weights.items():
+            source_id = id_by_name.get(source)
+            target_id = id_by_name.get(target)
+            if source_id is None or target_id is None:
+                continue  # unresolved endpoint — skip; never fabricate an entity
+            edge_rows.append((workspace_id, source_id, target_id, relation, weight))
+        if edge_rows:
+            connection.executemany(
+                "INSERT INTO edges (workspace_id, source_entity_id, "
+                "target_entity_id, relation, weight) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (workspace_id, source_entity_id, target_entity_id, "
+                "relation) DO UPDATE SET weight = weight + excluded.weight",
+                edge_rows,
+            )
+        connection.commit()
+
+    def get_entity_by_name(
+        self, name: str, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> EntityRecord | None:
+        """Return the entity named ``name`` in the workspace, or None.
+
+        When several entities share a name (same name, different type), the
+        earliest-created one (lowest id) is returned, keeping resolution
+        deterministic. Used to look up the "entity X" whose neighbours a caller
+        wants (T4.2 done-when). Read-only.
+        """
+        connection = self._require_connection()
+        row = connection.execute(
+            "SELECT id, workspace_id, name, type FROM entities "
+            "WHERE workspace_id = ? AND name = ? ORDER BY id LIMIT 1",
+            (workspace_id, name),
+        ).fetchone()
+        return _to_entity(row) if row is not None else None
+
+    def get_neighbors(
+        self, entity_id: int, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[EntityRecord]:
+        """Return the entities directly connected to ``entity_id`` by any edge.
+
+        Neighbours reached by an outgoing or an incoming edge are both included,
+        de-duplicated and ordered by id. Returns an empty list for an unknown or
+        isolated entity. Read-only.
+        """
+        connection = self._require_connection()
+        rows = connection.execute(
+            "SELECT DISTINCT e.id, e.workspace_id, e.name, e.type FROM entities e "
+            "JOIN edges g ON "
+            "((g.source_entity_id = ? AND g.target_entity_id = e.id) OR "
+            " (g.target_entity_id = ? AND g.source_entity_id = e.id)) "
+            "WHERE g.workspace_id = ? ORDER BY e.id",
+            (entity_id, entity_id, workspace_id),
+        ).fetchall()
+        return [_to_entity(row) for row in rows]
+
+    def get_edges(self, *, workspace_id: str = DEFAULT_WORKSPACE_ID) -> list[EdgeRecord]:
+        """Return all edges in the workspace, ordered by id. Read-only."""
+        connection = self._require_connection()
+        rows = connection.execute(
+            "SELECT id, source_entity_id, target_entity_id, relation, weight "
+            "FROM edges WHERE workspace_id = ? ORDER BY id",
+            (workspace_id,),
+        ).fetchall()
+        return [_to_edge(row) for row in rows]
+
+    def _resolve_entity_ids(
+        self, connection: sqlite3.Connection, workspace_id: str, names: set[str]
+    ) -> dict[str, int]:
+        """Map each entity name to its id (lowest id when a name repeats)."""
+        if not names:
+            return {}
+        name_list = list(names)
+        placeholders = ",".join("?" for _ in name_list)
+        rows = connection.execute(
+            f"SELECT name, MIN(id) AS id FROM entities "
+            f"WHERE workspace_id = ? AND name IN ({placeholders}) GROUP BY name",
+            (workspace_id, *name_list),
+        ).fetchall()
+        return {row["name"]: row["id"] for row in rows}
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             raise RuntimeError("Storage is not connected; call connect() first")
@@ -293,4 +464,23 @@ def _to_record(row: sqlite3.Row) -> FileRecord:
         error=row["error"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _to_entity(row: sqlite3.Row) -> EntityRecord:
+    return EntityRecord(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        name=row["name"],
+        type=row["type"],
+    )
+
+
+def _to_edge(row: sqlite3.Row) -> EdgeRecord:
+    return EdgeRecord(
+        id=row["id"],
+        source_entity_id=row["source_entity_id"],
+        target_entity_id=row["target_entity_id"],
+        relation=row["relation"],
+        weight=row["weight"],
     )
