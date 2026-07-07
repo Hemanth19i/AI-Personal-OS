@@ -16,6 +16,7 @@ from pathlib import Path
 
 from aipos.chunking import chunk_text
 from aipos.embedding import Embedder
+from aipos.extraction import EntityExtractor
 from aipos.hashing import sha256_file
 from aipos.ocr import OcrEngine
 from aipos.parsing import parse_pdf
@@ -48,23 +49,25 @@ def process_file(
     embedder: Embedder,
     vector_store: VectorStore,
     ocr: OcrEngine,
+    extractor: EntityExtractor,
 ) -> None:
     """Register a completed file and, if it is a PDF, process it.
 
     Registration dedupes by content hash. A newly registered PDF is parsed
     (falling back to OCR when it has no text layer), chunked, its chunks
-    persisted, one embedding generated per chunk, and each embedding stored in
-    the vector store keyed by chunk_id, driven through its lifecycle:
-    PARSING -> [OCR] -> CHUNKING -> EMBEDDING -> READY on success, or FAILED
-    (with the error recorded) on failure. Non-PDF files are left pending for a
-    later parser (TXT/Markdown), and duplicates are skipped.
+    persisted, one embedding generated per chunk and stored in the vector store
+    keyed by chunk_id, then its entities and relationships extracted, driven
+    through its lifecycle:
+    PARSING -> [OCR] -> CHUNKING -> EMBEDDING -> EXTRACTING -> READY on success,
+    or FAILED (with the error recorded) on failure. Non-PDF files are left
+    pending for a later parser (TXT/Markdown), and duplicates are skipped.
     """
     record = register_file(path, storage)
     if record is None:
         return  # duplicate content, already registered
     if path.suffix.lower() != ".pdf":
         return  # only PDFs are parsed in this ticket
-    _process_pdf(record.id, path, storage, embedder, vector_store, ocr)
+    _process_pdf(record.id, path, storage, embedder, vector_store, ocr, extractor)
 
 
 def _process_pdf(
@@ -74,6 +77,7 @@ def _process_pdf(
     embedder: Embedder,
     vector_store: VectorStore,
     ocr: OcrEngine,
+    extractor: EntityExtractor,
 ) -> None:
     storage.update_status(file_id, FileStatus.PARSING)
     try:
@@ -113,11 +117,33 @@ def _process_pdf(
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
         return
 
+    storage.update_status(file_id, FileStatus.EXTRACTING)
+    try:
+        # Extract entities and relationships per stored chunk (T4.1, the
+        # `extracting` lifecycle step, Design Doc §A5). Extraction runs at chunk
+        # granularity — over each ChunkRecord.text, not the concatenated
+        # document — so later milestones (T4.2–T4.4) can attach chunk-level
+        # provenance for GraphRAG, graph retrieval, and neighbour expansion. The
+        # results are surfaced via logging here; persisting them to the frozen
+        # entities/edges tables is T4.2 and is intentionally not done yet (see
+        # Remaining Technical Debt).
+        extractions = [extractor.extract(record.text) for record in records]
+    except Exception as error:
+        logger.exception("Entity extraction failed: %s", path)
+        storage.update_status(file_id, FileStatus.FAILED, error=str(error))
+        return
+
+    entity_count = sum(len(result.entities) for result in extractions)
+    relationship_count = sum(len(result.relationships) for result in extractions)
+
     storage.update_status(file_id, FileStatus.READY)
     logger.info(
-        "Processed PDF id=%d (%d chunk(s), %d vector(s) stored): %s",
+        "Processed PDF id=%d (%d chunk(s), %d vector(s), "
+        "%d entit(y/ies), %d relationship(s)): %s",
         file_id,
         len(records),
         len(vectors),
+        entity_count,
+        relationship_count,
         path,
     )
