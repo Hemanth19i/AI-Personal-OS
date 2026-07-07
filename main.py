@@ -19,7 +19,9 @@ from pathlib import Path
 
 from aipos.config import load_config
 from aipos.embedding import OllamaEmbedder
+from aipos.extraction import LLMEntityExtractor
 from aipos.ingest import process_file
+from aipos.llm import OllamaLLM
 from aipos.ocr import TesseractOcr
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.sources import FolderSource
@@ -62,14 +64,19 @@ def main() -> None:
 
     # Watch the configured folder; each file that passes the write-completion
     # guard is registered and (if a PDF) parsed — with OCR fallback for scanned
-    # PDFs — chunked, persisted, embedded, and its vectors stored (T1.4 +
-    # T2.2..T2.7). FolderSource owns the watching and knows nothing of hashing,
-    # parsing, OCR, embedding, or storage.
+    # PDFs — chunked, persisted, embedded, its vectors stored, and its entities
+    # extracted (T1.4 + T2.2..T2.7 + T4.1). FolderSource owns the watching and
+    # knows nothing of hashing, parsing, OCR, embedding, extraction, or storage.
     embedder = OllamaEmbedder(config.embedding_model)
     ocr = TesseractOcr()
+    # Entity extraction reuses the existing LLM abstraction (no new backend);
+    # the same Ollama model that answers questions extracts the graph.
+    extractor = LLMEntityExtractor(OllamaLLM(config.llm_model))
     source = FolderSource(config.watched_folder)
     source.watch(
-        lambda path: process_file(path, storage, embedder, vector_store, ocr)
+        lambda path: process_file(
+            path, storage, embedder, vector_store, ocr, extractor
+        )
     )
 
     # flush=True: stdout is block-buffered when piped, and the process then
