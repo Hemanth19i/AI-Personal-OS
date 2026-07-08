@@ -19,6 +19,7 @@ from pathlib import Path
 
 from aipos.answering import AnswerResult, AnswerService
 from aipos.config import load_config
+from aipos.explainability import Explanation
 from aipos.embedding import OllamaEmbedder
 from aipos.graph_retrieval import GraphExpander, GraphRetriever, RoutedRetriever
 from aipos.intent import HeuristicIntentRouter
@@ -45,9 +46,41 @@ def render_answer(result: AnswerResult) -> str:
     return "\n".join(lines)
 
 
-def run_ask(question: str, service: AnswerService) -> str:
-    """Answer ``question`` with the given service and return the rendered output."""
-    return render_answer(service.answer(question))
+def render_explanation(explanation: Explanation) -> str:
+    """Format an ``Explanation`` for the terminal (the T5.1 reasoning trace)."""
+    graph = (
+        f"{explanation.graph_relation_count} relation(s)"
+        if explanation.graph_expanded
+        else "skipped"
+    )
+    if not explanation.llm_consulted:
+        llm = "not consulted (no context)"
+    elif explanation.grounded:
+        llm = "grounded answer generated"
+    else:
+        llm = "answer generated (not grounded)"
+    return "\n".join(
+        [
+            "Explanation:",
+            f"  Strategy:        {explanation.strategy}",
+            f"  Reason:          {explanation.reason}",
+            f"  Retrieved:       {explanation.retrieved_count} chunk(s)",
+            f"  Graph expansion: {graph}",
+            f"  Reranker:        {explanation.reranked_count} reranked",
+            f"  LLM:             {llm}",
+            f"  Sources:         {explanation.citation_count} citation(s)",
+            f"  Timestamp:       {explanation.timestamp}",
+        ]
+    )
+
+
+def run_ask(question: str, service: AnswerService, *, explain: bool = False) -> str:
+    """Answer ``question`` and render it, optionally with its reasoning trace."""
+    result = service.answer(question)
+    output = render_answer(result)
+    if explain:
+        output = f"{output}\n\n{render_explanation(result.explanation)}"
+    return output
 
 
 def _build_answer_service() -> AnswerService:
@@ -83,11 +116,16 @@ def main(argv: list[str] | None = None, *, service: AnswerService | None = None)
     subparsers = parser.add_subparsers(dest="command", required=True)
     ask_parser = subparsers.add_parser("ask", help="Answer a question from the corpus")
     ask_parser.add_argument("question", help="The question to answer")
+    ask_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Also show the reasoning trace behind the answer",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "ask":
         answer_service = service if service is not None else _build_answer_service()
-        print(run_ask(args.question, answer_service), flush=True)
+        print(run_ask(args.question, answer_service, explain=args.explain), flush=True)
         return 0
     return 1  # unreachable: argparse enforces a known command
 

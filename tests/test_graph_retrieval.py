@@ -14,6 +14,7 @@ from aipos.graph_retrieval import (
     ExpandedRetrievalResult,
     GraphExpander,
     GraphRetriever,
+    RetrievalExecution,
     RoutedRetriever,
 )
 from aipos.intent import RoutingDecision, Strategy
@@ -171,9 +172,11 @@ class RoutedRetrieverTests(unittest.TestCase):
             ExpandedRetrievalResult([_chunk("nope", 9)], [GraphRelation("a", "r", "b", 1)])
         )
         router = _FakeRouter(RoutingDecision(Strategy.SEMANTIC, "factual"))
-        result = RoutedRetriever(router, semantic, graph).retrieve("who made x?", k=3)
-        self.assertEqual(result.chunks, chunks)
-        self.assertEqual(result.graph_context, [])  # semantic path -> no graph context
+        execution = RoutedRetriever(router, semantic, graph).retrieve("who made x?", k=3)
+        self.assertIsInstance(execution, RetrievalExecution)
+        self.assertIs(execution.routing.strategy, Strategy.SEMANTIC)  # decision surfaced
+        self.assertEqual(execution.result.chunks, chunks)
+        self.assertEqual(execution.result.graph_context, [])  # semantic -> no graph context
         self.assertEqual(graph.calls, [])  # graph retriever never consulted
         self.assertEqual(semantic.calls, [("who made x?", 3)])
 
@@ -182,8 +185,9 @@ class RoutedRetrieverTests(unittest.TestCase):
         semantic = _FakeSemantic([])
         graph = _FakeGraph(expanded)
         router = _FakeRouter(RoutingDecision(Strategy.GRAPH, "relationship keyword"))
-        result = RoutedRetriever(router, semantic, graph).retrieve("how do a and b relate?", k=5)
-        self.assertIs(result, expanded)
+        execution = RoutedRetriever(router, semantic, graph).retrieve("how do a and b relate?", k=5)
+        self.assertIs(execution.routing.strategy, Strategy.GRAPH)
+        self.assertIs(execution.result, expanded)  # graph retriever's result, unwrapped
         self.assertEqual(graph.calls, [("how do a and b relate?", 5)])
         self.assertEqual(semantic.calls, [])  # semantic-only path not taken
 

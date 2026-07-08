@@ -32,7 +32,7 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from aipos.intent import IntentRouter, Strategy
+from aipos.intent import IntentRouter, RoutingDecision, Strategy
 from aipos.retrieval import DEFAULT_TOP_K, RetrievalResult, SemanticRetriever
 from aipos.storage import GraphRelation, SQLiteStorage
 
@@ -45,24 +45,41 @@ class ExpandedRetrievalResult:
 
     ``chunks`` are the citable, rerankable vector hits (unchanged). ``graph_context``
     is supplementary relationship context only — it is never reranked and never
-    becomes a citation source.
+    becomes a citation source. This stays a pure retrieval DTO: routing metadata
+    lives on ``RetrievalExecution``, not here.
     """
 
     chunks: list[RetrievalResult]
     graph_context: list[GraphRelation]
 
 
-@runtime_checkable
-class Retriever(Protocol):
-    """Produces an ``ExpandedRetrievalResult`` for a query.
+@dataclass(frozen=True)
+class RetrievalExecution:
+    """A completed routed retrieval: the routing decision plus its result (T5.1).
 
-    The read-path contract that answer generation depends on. Both
-    ``GraphRetriever`` and ``RoutedRetriever`` satisfy it, so ``AnswerService``
-    (and future consumers) depend on this protocol rather than a concrete
-    strategy — new strategies (keyword, hybrid) can slot in without touching them.
+    ``RoutedRetriever`` returns this so ``AnswerService`` can see *how* retrieval
+    was routed (for the ``Explanation``) without routing metadata leaking into
+    the retrieval DTO. Later read-path metadata (latency, timings, evidence)
+    hangs off this wrapper, keeping ``ExpandedRetrievalResult`` a pure result.
     """
 
-    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> ExpandedRetrievalResult:
+    routing: RoutingDecision
+    result: ExpandedRetrievalResult
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """Produces a ``RetrievalExecution`` for a query — answer generation's contract.
+
+    The read-path contract that ``AnswerService`` depends on: retrieve, and
+    report how retrieval was routed. ``RoutedRetriever`` satisfies it; future
+    routed retrievers can slot in without touching answer generation.
+    ``GraphRetriever``/``SemanticRetriever`` are the inner *strategies* (they
+    return raw results) that a routed retriever composes — they are not this
+    protocol.
+    """
+
+    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> RetrievalExecution:
         ...
 
 
@@ -121,11 +138,11 @@ class RoutedRetriever:
     the GRAPH strategy delegates to the graph-aware retriever (vector + graph
     expansion); the SEMANTIC strategy runs vector retrieval only and returns
     empty graph context, so simple lookups skip the graph work entirely and are
-    visibly faster (Build Plan T4.4). The routing decision — strategy, reason,
-    and query — is logged; it is not yet part of the answer payload (that is
-    Milestone 5 explainability). ``GraphRetriever`` is used unchanged, and this
-    class satisfies the same ``Retriever`` protocol, so it slots in ahead of
-    ``AnswerService`` without changing answer generation.
+    visibly faster (Build Plan T4.4). It returns a ``RetrievalExecution`` pairing
+    the routing decision with the result, so ``AnswerService`` can build the
+    ``Explanation`` (T5.1) from observable facts. The decision is also logged.
+    ``GraphRetriever`` is used unchanged (an inner strategy); this class is the
+    one that satisfies the ``Retriever`` protocol ahead of ``AnswerService``.
     """
 
     def __init__(
@@ -138,11 +155,12 @@ class RoutedRetriever:
         self._semantic = semantic
         self._graph = graph
 
-    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> ExpandedRetrievalResult:
+    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> RetrievalExecution:
         """Route ``query`` to a strategy and retrieve accordingly.
 
         SEMANTIC returns vector hits with no graph context; GRAPH delegates to
-        the graph-aware retriever. The decision is logged either way.
+        the graph-aware retriever. Either way the routing decision is logged and
+        returned alongside the result.
         """
         decision = self._router.route(query)
         logger.info(
@@ -152,7 +170,9 @@ class RoutedRetriever:
             query,
         )
         if decision.strategy is Strategy.GRAPH:
-            return self._graph.retrieve(query, k=k)
-        return ExpandedRetrievalResult(
-            chunks=self._semantic.retrieve(query, k=k), graph_context=[]
-        )
+            result = self._graph.retrieve(query, k=k)
+        else:
+            result = ExpandedRetrievalResult(
+                chunks=self._semantic.retrieve(query, k=k), graph_context=[]
+            )
+        return RetrievalExecution(routing=decision, result=result)
