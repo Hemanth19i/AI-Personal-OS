@@ -15,6 +15,7 @@ SQLite tables here, so all graph SQL stays in this single owner.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -151,6 +152,23 @@ class EdgeRecord:
     source_entity_id: int
     target_entity_id: int
     relation: str
+    weight: int
+
+
+@dataclass(frozen=True)
+class GraphRelation:
+    """A graph edge as human-readable context: endpoint *names*, relation, weight.
+
+    The read-model returned by ``get_graph_context`` for the graph-aware read
+    path (T4.3). Endpoint ids are already resolved to names here so callers
+    never touch entity rows; today it carries direct 1-hop relationships, and
+    the shape leaves room to later grow (multi-hop, filtered, ranked) without
+    changing callers.
+    """
+
+    source: str
+    relation: str
+    target: str
     weight: int
 
 
@@ -433,6 +451,63 @@ class SQLiteStorage:
         ).fetchall()
         return [_to_edge(row) for row in rows]
 
+    def find_entities_in_text(
+        self, text: str, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[EntityRecord]:
+        """Return the workspace entities whose name occurs in ``text``.
+
+        A higher-level read API for the graph-aware read path (T4.3): the caller
+        asks "which known entities does this text mention?" and storage decides
+        how to answer. Matching is whole-word and case-insensitive, so ``ZTNA``
+        matches ``ztna`` but not the ``AI`` inside ``aid``. Today it scans the
+        workspace's entities; it can become index-backed later without any
+        caller change. Read-only; returns ``[]`` for blank text or no matches.
+        """
+        if not text.strip():
+            return []
+        connection = self._require_connection()
+        rows = connection.execute(
+            "SELECT id, workspace_id, name, type FROM entities "
+            "WHERE workspace_id = ? ORDER BY id",
+            (workspace_id,),
+        ).fetchall()
+        return [_to_entity(row) for row in rows if _name_in_text(row["name"], text)]
+
+    def get_graph_context(
+        self, entity_ids: list[int], *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[GraphRelation]:
+        """Return the relationships incident to ``entity_ids`` as named triples.
+
+        The graph-context read API for T4.3: for the given entities, return the
+        edges touching them (as source or target) with endpoint ids already
+        resolved to names, ordered deterministically by edge id. Today this is
+        direct 1-hop relationships; the contract lets storage later grow to
+        multi-hop / filtered / ranked context without changing callers. Read-only;
+        ``[]`` for an empty id list.
+        """
+        if not entity_ids:
+            return []
+        connection = self._require_connection()
+        placeholders = ",".join("?" for _ in entity_ids)
+        rows = connection.execute(
+            "SELECT s.name AS source, g.relation AS relation, t.name AS target, "
+            "g.weight AS weight FROM edges g "
+            "JOIN entities s ON g.source_entity_id = s.id "
+            "JOIN entities t ON g.target_entity_id = t.id "
+            f"WHERE g.workspace_id = ? AND (g.source_entity_id IN ({placeholders}) "
+            f"OR g.target_entity_id IN ({placeholders})) ORDER BY g.id",
+            (workspace_id, *entity_ids, *entity_ids),
+        ).fetchall()
+        return [
+            GraphRelation(
+                source=row["source"],
+                relation=row["relation"],
+                target=row["target"],
+                weight=row["weight"],
+            )
+            for row in rows
+        ]
+
     def _resolve_entity_ids(
         self, connection: sqlite3.Connection, workspace_id: str, names: set[str]
     ) -> dict[str, int]:
@@ -465,6 +540,18 @@ def _to_record(row: sqlite3.Row) -> FileRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _name_in_text(name: str, text: str) -> bool:
+    """Whether ``name`` occurs as a whole word in ``text`` (case-insensitive).
+
+    Word boundaries avoid spurious substring hits (``AI`` must not match inside
+    ``aid``); ``re.escape`` keeps names with regex metacharacters literal.
+    """
+    name = name.strip()
+    if not name:
+        return False
+    return re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE) is not None
 
 
 def _to_entity(row: sqlite3.Row) -> EntityRecord:

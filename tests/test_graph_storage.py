@@ -209,6 +209,78 @@ class GraphStorageTests(unittest.TestCase):
         self.assertIsInstance(self.storage.get_entity_by_name("Alice"), EntityRecord)
         self.assertIsInstance(self.storage.get_edges()[0], EdgeRecord)
 
+    # --- find_entities_in_text (T4.3) ---
+
+    def test_find_entities_in_text_matches_whole_words_case_insensitively(self) -> None:
+        self.storage.add_graph(
+            [Entity("ZTNA", "concept"), Entity("Network", "concept")], []
+        )
+        found = {
+            e.name
+            for e in self.storage.find_entities_in_text(
+                "The ztna design protects the Network layer"
+            )
+        }
+        self.assertEqual(found, {"ZTNA", "Network"})
+
+    def test_find_entities_in_text_avoids_substring_false_positives(self) -> None:
+        self.storage.add_graph([Entity("AI", "concept")], [])
+        self.assertEqual(self.storage.find_entities_in_text("a first aid kit"), [])
+
+    def test_find_entities_in_text_blank_returns_empty(self) -> None:
+        self.storage.add_graph([Entity("ZTNA", "concept")], [])
+        self.assertEqual(self.storage.find_entities_in_text("   \n "), [])
+
+    def test_find_entities_in_text_is_workspace_scoped(self) -> None:
+        self.storage.add_graph([Entity("ZTNA", "concept")], [], workspace_id="w2")
+        self.assertEqual(self.storage.find_entities_in_text("ZTNA"), [])
+        self.assertTrue(self.storage.find_entities_in_text("ZTNA", workspace_id="w2"))
+
+    # --- get_graph_context (T4.3) ---
+
+    def test_get_graph_context_returns_named_triples_with_weight(self) -> None:
+        self.storage.add_graph(
+            [Entity("ZTNA", "concept"), Entity("Network", "concept")],
+            [Relationship("ZTNA", "Network", "protects")],
+        )
+        ztna = self.storage.get_entity_by_name("ZTNA")
+        ctx = self.storage.get_graph_context([ztna.id])
+        self.assertEqual(len(ctx), 1)
+        self.assertEqual(
+            (ctx[0].source, ctx[0].relation, ctx[0].target, ctx[0].weight),
+            ("ZTNA", "protects", "Network", 1),
+        )
+
+    def test_get_graph_context_includes_incoming_and_outgoing_edges(self) -> None:
+        self.storage.add_graph(
+            [Entity("A", "c"), Entity("B", "c"), Entity("C", "c")],
+            [Relationship("A", "B", "x"), Relationship("C", "A", "y")],
+        )
+        a = self.storage.get_entity_by_name("A")
+        triples = {
+            (r.source, r.relation, r.target)
+            for r in self.storage.get_graph_context([a.id])
+        }
+        self.assertEqual(triples, {("A", "x", "B"), ("C", "y", "A")})
+
+    def test_get_graph_context_empty_ids_returns_empty(self) -> None:
+        self.assertEqual(self.storage.get_graph_context([]), [])
+
+    def test_get_graph_context_isolated_entity_returns_empty(self) -> None:
+        self.storage.add_graph([Entity("Lonely", "concept")], [])
+        lonely = self.storage.get_entity_by_name("Lonely")
+        self.assertEqual(self.storage.get_graph_context([lonely.id]), [])
+
+    def test_get_graph_context_is_workspace_scoped(self) -> None:
+        self.storage.add_graph(
+            [Entity("A", "c"), Entity("B", "c")],
+            [Relationship("A", "B", "x")],
+            workspace_id="w2",
+        )
+        a = self.storage.get_entity_by_name("A", workspace_id="w2")
+        self.assertEqual(self.storage.get_graph_context([a.id]), [])  # default ws
+        self.assertTrue(self.storage.get_graph_context([a.id], workspace_id="w2"))
+
 
 if __name__ == "__main__":
     unittest.main()

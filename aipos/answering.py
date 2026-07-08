@@ -1,17 +1,21 @@
 """Answer generation for AI Personal OS (T3.3).
 
-The top-level read-path orchestrator: it composes the injected semantic
-retriever, reranker, prompt builder, LLM, and storage into the frozen pipeline
-(Design Doc §A6):
+Answer generation only: it takes the graph-aware retriever's result and turns it
+into a grounded, cited answer (Design Doc §A6):
 
-    retrieve -> rerank -> build grounded prompt -> LLM -> citation build -> AnswerResult
+    (chunks + graph context) -> rerank chunks -> build grounded prompt -> LLM
+        -> citation build -> AnswerResult
 
-A synchronous direct call (ADR-004). It owns no storage engine and writes no SQL
-or vectors — SQL stays in ``storage.py`` and LanceDB in ``vector_store.py``; this
-module only reads through their typed APIs. Dependencies are injected so tests
-run with fakes (no Ollama, no LanceDB).
+Retrieval orchestration lives upstream in ``GraphRetriever`` (T4.3), so this
+module stays responsible for answer generation, not retrieval. A synchronous
+direct call (ADR-004). It owns no storage engine and writes no SQL or vectors —
+SQL stays in ``storage.py`` and LanceDB in ``vector_store.py``; this module only
+reads through their typed APIs. Dependencies are injected so tests run with fakes
+(no Ollama, no LanceDB).
 
-Scope is the T3.3 subset of the frozen ``AnswerResult`` (Design Doc §A7):
+Reranking and citations remain chunk-only. Graph context enriches the prompt as
+supporting context but is never reranked and never becomes a citation source
+(T4.3). Scope is the T3.3 subset of the frozen ``AnswerResult`` (Design Doc §A7):
 ``answer`` + ``sources`` + ``grounded``. Confidence, reasoning_path, graph_path,
 and strategy_used belong to later milestones and are intentionally absent.
 """
@@ -21,10 +25,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from aipos.graph_retrieval import GraphRetriever
 from aipos.llm import LLM
 from aipos.prompt_builder import USED_CHUNKS_HEADER, build_prompt
 from aipos.reranking import Reranker
-from aipos.retrieval import DEFAULT_TOP_K, RetrievalResult, SemanticRetriever
+from aipos.retrieval import DEFAULT_TOP_K, RetrievalResult
 from aipos.storage import SQLiteStorage
 
 # Characters of chunk text kept as a citation snippet.
@@ -57,7 +62,7 @@ class AnswerService:
 
     def __init__(
         self,
-        retriever: SemanticRetriever,
+        retriever: GraphRetriever,
         reranker: Reranker,
         llm: LLM,
         storage: SQLiteStorage,
@@ -68,19 +73,20 @@ class AnswerService:
         self._storage = storage
 
     def answer(self, question: str, *, k: int = DEFAULT_TOP_K) -> AnswerResult:
-        """Retrieve, rerank, and generate a grounded, cited answer.
+        """Retrieve (with graph expansion), rerank, and generate a cited answer.
 
         Returns a not-grounded result with no sources — without calling the LLM —
-        when nothing relevant is retrieved. Otherwise the LLM answers strictly
-        from the reranked chunks; grounding and sources come from the
-        ``USED_CHUNKS`` footer.
+        when no chunks are retrieved. Otherwise the LLM answers from the reranked
+        chunks, enriched by graph context; grounding and sources come from the
+        ``USED_CHUNKS`` footer. Reranking and citations are chunk-only; the graph
+        context is supporting prompt context, never reranked or cited.
         """
-        retrieved = self._retriever.retrieve(question, k=k)
-        chunks = self._reranker.rerank(question, retrieved)
+        expanded = self._retriever.retrieve(question, k=k)
+        chunks = self._reranker.rerank(question, expanded.chunks)
         if not chunks:
             return AnswerResult(answer=_NO_CONTEXT_ANSWER, sources=[], grounded=False)
 
-        prompt = build_prompt(question, chunks)
+        prompt = build_prompt(question, chunks, expanded.graph_context)
         raw = self._llm.generate(prompt)
 
         answer_text, positions = _parse_footer(raw)
