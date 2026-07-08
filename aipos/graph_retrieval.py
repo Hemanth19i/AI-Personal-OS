@@ -28,10 +28,15 @@ no hybrid/graph ranking (those are later milestones).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
+from aipos.intent import IntentRouter, Strategy
 from aipos.retrieval import DEFAULT_TOP_K, RetrievalResult, SemanticRetriever
 from aipos.storage import GraphRelation, SQLiteStorage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,20 @@ class ExpandedRetrievalResult:
 
     chunks: list[RetrievalResult]
     graph_context: list[GraphRelation]
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """Produces an ``ExpandedRetrievalResult`` for a query.
+
+    The read-path contract that answer generation depends on. Both
+    ``GraphRetriever`` and ``RoutedRetriever`` satisfy it, so ``AnswerService``
+    (and future consumers) depend on this protocol rather than a concrete
+    strategy — new strategies (keyword, hybrid) can slot in without touching them.
+    """
+
+    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> ExpandedRetrievalResult:
+        ...
 
 
 class GraphExpander:
@@ -93,3 +112,47 @@ class GraphRetriever:
         chunks = self._retriever.retrieve(query, k=k)
         graph_context = self._expander.expand(chunks)
         return ExpandedRetrievalResult(chunks=chunks, graph_context=graph_context)
+
+
+class RoutedRetriever:
+    """Read-path entry point: routes each query to a retrieval strategy (T4.4).
+
+    Consults the injected ``IntentRouter`` and dispatches (the strategy pattern):
+    the GRAPH strategy delegates to the graph-aware retriever (vector + graph
+    expansion); the SEMANTIC strategy runs vector retrieval only and returns
+    empty graph context, so simple lookups skip the graph work entirely and are
+    visibly faster (Build Plan T4.4). The routing decision — strategy, reason,
+    and query — is logged; it is not yet part of the answer payload (that is
+    Milestone 5 explainability). ``GraphRetriever`` is used unchanged, and this
+    class satisfies the same ``Retriever`` protocol, so it slots in ahead of
+    ``AnswerService`` without changing answer generation.
+    """
+
+    def __init__(
+        self,
+        router: IntentRouter,
+        semantic: SemanticRetriever,
+        graph: GraphRetriever,
+    ) -> None:
+        self._router = router
+        self._semantic = semantic
+        self._graph = graph
+
+    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> ExpandedRetrievalResult:
+        """Route ``query`` to a strategy and retrieve accordingly.
+
+        SEMANTIC returns vector hits with no graph context; GRAPH delegates to
+        the graph-aware retriever. The decision is logged either way.
+        """
+        decision = self._router.route(query)
+        logger.info(
+            "IntentRouter:\nstrategy=%s\nreason=%s\nquery=%r",
+            decision.strategy.name,
+            decision.reason,
+            query,
+        )
+        if decision.strategy is Strategy.GRAPH:
+            return self._graph.retrieve(query, k=k)
+        return ExpandedRetrievalResult(
+            chunks=self._semantic.retrieve(query, k=k), graph_context=[]
+        )
