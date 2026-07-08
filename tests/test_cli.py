@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 
 from aipos import cli
 from aipos.answering import AnswerResult, Source
-from aipos.explainability import Explanation
+from aipos.explainability import Confidence, Explanation
 
 
 class _FakeAnswerService:
@@ -33,6 +33,7 @@ _EXPLANATION = Explanation(
     llm_consulted=True,
     grounded=True,
     citation_count=1,
+    confidence=Confidence.MEDIUM,
 )
 
 _GROUNDED = AnswerResult(
@@ -68,6 +69,7 @@ class RenderExplanationTests(unittest.TestCase):
         self.assertIn("Retrieved:       5 chunk(s)", out)
         self.assertIn("Graph expansion: skipped", out)
         self.assertIn("Sources:         1 citation(s)", out)
+        self.assertIn("Confidence:      medium", out)
         self.assertIn("2026-01-02T03:04:05+00:00", out)
 
 
@@ -81,6 +83,7 @@ class AskCommandTests(unittest.TestCase):
     def test_run_ask_without_explain_omits_the_trace(self) -> None:
         out = cli.run_ask("q", _FakeAnswerService(_GROUNDED))
         self.assertNotIn("Explanation:", out)
+        self.assertNotIn("Confidence:", out)  # confidence lives in the trace only
 
     def test_run_ask_with_explain_appends_the_trace(self) -> None:
         out = cli.run_ask("q", _FakeAnswerService(_GROUNDED), explain=True)

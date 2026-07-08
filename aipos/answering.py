@@ -28,7 +28,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from aipos.explainability import Clock, Explanation, SystemClock
+from aipos.explainability import (
+    Clock,
+    ConfidenceCalculator,
+    Explanation,
+    RuleBasedConfidenceCalculator,
+    SystemClock,
+)
 from aipos.graph_retrieval import RetrievalExecution, Retriever
 from aipos.intent import Strategy
 from aipos.llm import LLM
@@ -79,12 +85,16 @@ class AnswerService:
         storage: SQLiteStorage,
         *,
         clock: Clock | None = None,
+        confidence: ConfidenceCalculator | None = None,
     ) -> None:
         self._retriever = retriever
         self._reranker = reranker
         self._llm = llm
         self._storage = storage
         self._clock = clock if clock is not None else SystemClock()
+        self._confidence = (
+            confidence if confidence is not None else RuleBasedConfidenceCalculator()
+        )
 
     def answer(self, question: str, *, k: int = DEFAULT_TOP_K) -> AnswerResult:
         """Retrieve (with graph expansion), rerank, and generate a cited answer.
@@ -143,20 +153,35 @@ class AnswerService:
         grounded: bool,
         citation_count: int,
     ) -> Explanation:
-        """Assemble the Explanation from observed read-path facts (T5.1)."""
+        """Assemble the Explanation from observed read-path facts (T5.1/T5.2).
+
+        Confidence (T5.2) is derived by the injected ``ConfidenceCalculator``
+        from these same observable facts — never from model output.
+        """
         routing = execution.routing
         result = execution.result
+        retrieved_count = len(result.chunks)
+        graph_relation_count = len(result.graph_context)
+        confidence = self._confidence.assess(
+            llm_consulted=llm_consulted,
+            grounded=grounded,
+            citation_count=citation_count,
+            graph_relation_count=graph_relation_count,
+            retrieved_count=retrieved_count,
+            reranked_count=reranked_count,
+        )
         return Explanation(
             timestamp=self._clock.now().isoformat(),
             strategy=routing.strategy.value,
             reason=routing.reason,
-            retrieved_count=len(result.chunks),
+            retrieved_count=retrieved_count,
             graph_expanded=routing.strategy is Strategy.GRAPH,
-            graph_relation_count=len(result.graph_context),
+            graph_relation_count=graph_relation_count,
             reranked_count=reranked_count,
             llm_consulted=llm_consulted,
             grounded=grounded,
             citation_count=citation_count,
+            confidence=confidence,
         )
 
     def _build_sources(

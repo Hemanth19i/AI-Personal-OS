@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aipos.answering import AnswerService, Source
 from aipos.chunking import Chunk
-from aipos.explainability import Explanation
+from aipos.explainability import Confidence, Explanation
 from aipos.graph_retrieval import ExpandedRetrievalResult, RetrievalExecution
 from aipos.intent import RoutingDecision, Strategy
 from aipos.retrieval import RetrievalResult
@@ -85,14 +85,17 @@ class AnswerServiceTests(unittest.TestCase):
 
     def _service(
         self, llm, results=None, graph_context=None, *,
-        strategy=Strategy.SEMANTIC, reason="test-reason", clock=None,
+        strategy=Strategy.SEMANTIC, reason="test-reason", clock=None, confidence=None,
     ) -> AnswerService:
         retriever = _FakeRetriever(
             results if results is not None else self.results, graph_context,
             strategy=strategy, reason=reason,
         )
         self._retriever = retriever
-        return AnswerService(retriever, self.reranker, llm, self.storage, clock=clock)
+        return AnswerService(
+            retriever, self.reranker, llm, self.storage,
+            clock=clock, confidence=confidence,
+        )
 
     def test_grounded_answer_with_cited_sources(self) -> None:
         llm = FakeLLM("The answer is alpha and gamma.\nUSED_CHUNKS:\n1,3")
@@ -233,6 +236,62 @@ class AnswerServiceTests(unittest.TestCase):
         result = self._service(FakeLLM("a\nUSED_CHUNKS:\n1")).answer("what?")
         parsed = datetime.fromisoformat(result.explanation.timestamp)
         self.assertIsNotNone(parsed.tzinfo)
+
+    # --- confidence (T5.2) ---
+
+    def test_no_context_confidence_is_none(self) -> None:
+        result = self._service(FakeLLM("never"), results=[]).answer("what?")
+        self.assertIs(result.explanation.confidence, Confidence.NONE)
+
+    def test_ungrounded_confidence_is_low(self) -> None:
+        result = self._service(FakeLLM("Answer.\nUSED_CHUNKS:\nNONE")).answer("what?")
+        self.assertIs(result.explanation.confidence, Confidence.LOW)
+
+    def test_grounded_two_citations_without_graph_is_medium(self) -> None:
+        # SEMANTIC path: grounded, two citations, no graph support -> MEDIUM.
+        result = self._service(FakeLLM("Answer.\nUSED_CHUNKS:\n1,3")).answer("what?")
+        self.assertIs(result.explanation.confidence, Confidence.MEDIUM)
+
+    def test_grounded_two_citations_with_graph_is_high(self) -> None:
+        gc = [GraphRelation("alpha", "relates_to", "beta", 2)]
+        result = self._service(
+            FakeLLM("Answer.\nUSED_CHUNKS:\n1,3"), graph_context=gc,
+            strategy=Strategy.GRAPH, reason="rel",
+        ).answer("how?")
+        self.assertIs(result.explanation.confidence, Confidence.HIGH)
+
+    def test_grounded_single_citation_with_graph_is_medium(self) -> None:
+        gc = [GraphRelation("alpha", "relates_to", "beta", 2)]
+        result = self._service(
+            FakeLLM("Answer.\nUSED_CHUNKS:\n1"), graph_context=gc,
+            strategy=Strategy.GRAPH, reason="rel",
+        ).answer("how?")
+        self.assertIs(result.explanation.confidence, Confidence.MEDIUM)
+
+    def test_confidence_calculator_is_injectable_and_used_verbatim(self) -> None:
+        # A fake calculator is consulted with the observed facts and its verdict
+        # is used as-is — AnswerService never second-guesses it.
+        class _RecordingCalc:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def assess(self, **facts) -> Confidence:
+                self.calls.append(facts)
+                return Confidence.LOW
+
+        calc = _RecordingCalc()
+        result = self._service(
+            FakeLLM("Answer.\nUSED_CHUNKS:\n1,3"), confidence=calc
+        ).answer("what?")
+        self.assertIs(result.explanation.confidence, Confidence.LOW)
+        self.assertEqual(len(calc.calls), 1)
+        facts = calc.calls[0]
+        self.assertTrue(facts["llm_consulted"])
+        self.assertTrue(facts["grounded"])
+        self.assertEqual(facts["citation_count"], 2)
+        self.assertEqual(facts["graph_relation_count"], 0)
+        self.assertEqual(facts["retrieved_count"], 3)
+        self.assertEqual(facts["reranked_count"], 3)
 
 
 if __name__ == "__main__":

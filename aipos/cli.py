@@ -69,6 +69,7 @@ def render_explanation(explanation: Explanation) -> str:
             f"  Reranker:        {explanation.reranked_count} reranked",
             f"  LLM:             {llm}",
             f"  Sources:         {explanation.citation_count} citation(s)",
+            f"  Confidence:      {explanation.confidence.value}",
             f"  Timestamp:       {explanation.timestamp}",
         ]
     )
