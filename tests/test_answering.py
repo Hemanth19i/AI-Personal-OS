@@ -7,32 +7,52 @@ Ollama, no LanceDB.
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aipos.answering import AnswerService, Source
 from aipos.chunking import Chunk
-from aipos.graph_retrieval import ExpandedRetrievalResult
+from aipos.explainability import Explanation
+from aipos.graph_retrieval import ExpandedRetrievalResult, RetrievalExecution
+from aipos.intent import RoutingDecision, Strategy
 from aipos.retrieval import RetrievalResult
 from aipos.storage import GraphRelation, SQLiteStorage
 from tests.llm_fakes import FailingLLM, FakeLLM
 
 
+class _FixedClock:
+    """Deterministic clock for asserting the Explanation timestamp."""
+
+    def __init__(self, moment: datetime | None = None) -> None:
+        self._moment = moment or datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+    def now(self) -> datetime:
+        return self._moment
+
+
 class _FakeRetriever:
-    """Returns a canned ExpandedRetrievalResult and records the (question, k)."""
+    """Returns a canned RetrievalExecution and records the (question, k)."""
 
     def __init__(
         self,
         results: list[RetrievalResult],
         graph_context: list[GraphRelation] | None = None,
+        *,
+        strategy: Strategy = Strategy.SEMANTIC,
+        reason: str = "test-reason",
     ) -> None:
         self._results = results
         self._graph_context = graph_context if graph_context is not None else []
+        self._decision = RoutingDecision(strategy, reason)
         self.calls: list[tuple[str, int]] = []
 
-    def retrieve(self, query: str, *, k: int) -> ExpandedRetrievalResult:
+    def retrieve(self, query: str, *, k: int) -> RetrievalExecution:
         self.calls.append((query, k))
-        return ExpandedRetrievalResult(
-            chunks=list(self._results), graph_context=list(self._graph_context)
+        return RetrievalExecution(
+            routing=self._decision,
+            result=ExpandedRetrievalResult(
+                chunks=list(self._results), graph_context=list(self._graph_context)
+            ),
         )
 
 
@@ -63,12 +83,16 @@ class AnswerServiceTests(unittest.TestCase):
         self.storage.close()
         self._tmp.cleanup()
 
-    def _service(self, llm, results=None, graph_context=None) -> AnswerService:
+    def _service(
+        self, llm, results=None, graph_context=None, *,
+        strategy=Strategy.SEMANTIC, reason="test-reason", clock=None,
+    ) -> AnswerService:
         retriever = _FakeRetriever(
-            results if results is not None else self.results, graph_context
+            results if results is not None else self.results, graph_context,
+            strategy=strategy, reason=reason,
         )
         self._retriever = retriever
-        return AnswerService(retriever, self.reranker, llm, self.storage)
+        return AnswerService(retriever, self.reranker, llm, self.storage, clock=clock)
 
     def test_grounded_answer_with_cited_sources(self) -> None:
         llm = FakeLLM("The answer is alpha and gamma.\nUSED_CHUNKS:\n1,3")
@@ -155,6 +179,60 @@ class AnswerServiceTests(unittest.TestCase):
         llm = FakeLLM("x\nUSED_CHUNKS:\n1")
         self._service(llm).answer("what?")
         self.assertNotIn("knowledge graph", llm.prompts[0].lower())
+
+    # --- explanation (T5.1) ---
+
+    def test_grounded_answer_carries_a_deterministic_explanation(self) -> None:
+        clock = _FixedClock()
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1,3")
+        result = self._service(
+            llm, strategy=Strategy.SEMANTIC, reason="factual", clock=clock
+        ).answer("what?")
+        exp = result.explanation
+        self.assertIsInstance(exp, Explanation)
+        self.assertEqual(exp.strategy, "semantic")
+        self.assertEqual(exp.reason, "factual")
+        self.assertEqual(exp.retrieved_count, 3)
+        self.assertFalse(exp.graph_expanded)
+        self.assertEqual(exp.graph_relation_count, 0)
+        self.assertEqual(exp.reranked_count, 3)
+        self.assertTrue(exp.llm_consulted)
+        self.assertTrue(exp.grounded)
+        self.assertEqual(exp.citation_count, 2)
+        self.assertEqual(exp.timestamp, clock.now().isoformat())
+
+    def test_graph_strategy_explanation_reports_expansion(self) -> None:
+        gc = [GraphRelation("alpha", "relates_to", "beta", 2)]
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1")
+        result = self._service(
+            llm, graph_context=gc, strategy=Strategy.GRAPH, reason="relationship keyword"
+        ).answer("how?")
+        exp = result.explanation
+        self.assertEqual(exp.strategy, "graph")
+        self.assertTrue(exp.graph_expanded)
+        self.assertEqual(exp.graph_relation_count, 1)
+
+    def test_no_context_explanation_reports_llm_not_consulted(self) -> None:
+        result = self._service(FakeLLM("never"), results=[]).answer("what?")
+        exp = result.explanation
+        self.assertEqual(exp.retrieved_count, 0)
+        self.assertEqual(exp.reranked_count, 0)
+        self.assertFalse(exp.llm_consulted)
+        self.assertFalse(exp.grounded)
+        self.assertEqual(exp.citation_count, 0)
+
+    def test_ungrounded_explanation_consulted_llm_but_no_citations(self) -> None:
+        result = self._service(FakeLLM("Answer.\nUSED_CHUNKS:\nNONE")).answer("what?")
+        exp = result.explanation
+        self.assertTrue(exp.llm_consulted)
+        self.assertFalse(exp.grounded)
+        self.assertEqual(exp.citation_count, 0)
+        self.assertEqual(exp.reranked_count, 3)
+
+    def test_default_clock_timestamp_is_iso_utc(self) -> None:
+        result = self._service(FakeLLM("a\nUSED_CHUNKS:\n1")).answer("what?")
+        parsed = datetime.fromisoformat(result.explanation.timestamp)
+        self.assertIsNotNone(parsed.tzinfo)
 
 
 if __name__ == "__main__":

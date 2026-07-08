@@ -16,9 +16,11 @@ reads through their typed APIs. Dependencies are injected so tests run with fake
 
 Reranking and citations remain chunk-only. Graph context enriches the prompt as
 supporting context but is never reranked and never becomes a citation source
-(T4.3). Scope is the T3.3 subset of the frozen ``AnswerResult`` (Design Doc §A7):
-``answer`` + ``sources`` + ``grounded``. Confidence, reasoning_path, graph_path,
-and strategy_used belong to later milestones and are intentionally absent.
+(T4.3). Every answer now carries an ``Explanation`` (T5.1) — a deterministic
+record of the observable pipeline decisions (strategy, counts, grounding),
+built here because this is the one component that observes the whole read path.
+The qualitative confidence and graph_path detail of the frozen ``AnswerResult``
+(Design Doc §A7) remain later-ticket fields on that same ``Explanation``.
 """
 
 from __future__ import annotations
@@ -26,7 +28,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from aipos.graph_retrieval import Retriever
+from aipos.explainability import Clock, Explanation, SystemClock
+from aipos.graph_retrieval import RetrievalExecution, Retriever
+from aipos.intent import Strategy
 from aipos.llm import LLM
 from aipos.prompt_builder import USED_CHUNKS_HEADER, build_prompt
 from aipos.reranking import Reranker
@@ -51,11 +55,17 @@ class Source:
 
 @dataclass(frozen=True)
 class AnswerResult:
-    """The T3.3 answer payload: the prose answer, its sources, and grounding."""
+    """The answer payload: prose answer, sources, grounding, and its explanation.
+
+    ``explanation`` (T5.1) records the observable pipeline decisions behind the
+    answer; the frozen §A7 fields (qualitative confidence, detailed graph_path)
+    join it in later tickets.
+    """
 
     answer: str
     sources: list[Source]
     grounded: bool
+    explanation: Explanation
 
 
 class AnswerService:
@@ -67,11 +77,14 @@ class AnswerService:
         reranker: Reranker,
         llm: LLM,
         storage: SQLiteStorage,
+        *,
+        clock: Clock | None = None,
     ) -> None:
         self._retriever = retriever
         self._reranker = reranker
         self._llm = llm
         self._storage = storage
+        self._clock = clock if clock is not None else SystemClock()
 
     def answer(self, question: str, *, k: int = DEFAULT_TOP_K) -> AnswerResult:
         """Retrieve (with graph expansion), rerank, and generate a cited answer.
@@ -80,24 +93,71 @@ class AnswerService:
         when no chunks are retrieved. Otherwise the LLM answers from the reranked
         chunks, enriched by graph context; grounding and sources come from the
         ``USED_CHUNKS`` footer. Reranking and citations are chunk-only; the graph
-        context is supporting prompt context, never reranked or cited.
+        context is supporting prompt context, never reranked or cited. Every path
+        attaches an ``Explanation`` of the observable pipeline decisions (T5.1).
         """
-        expanded = self._retriever.retrieve(question, k=k)
-        chunks = self._reranker.rerank(question, expanded.chunks)
+        execution = self._retriever.retrieve(question, k=k)
+        chunks = self._reranker.rerank(question, execution.result.chunks)
         if not chunks:
-            return AnswerResult(answer=_NO_CONTEXT_ANSWER, sources=[], grounded=False)
+            explanation = self._explain(
+                execution, reranked_count=0, llm_consulted=False,
+                grounded=False, citation_count=0,
+            )
+            return AnswerResult(
+                answer=_NO_CONTEXT_ANSWER, sources=[], grounded=False,
+                explanation=explanation,
+            )
 
-        prompt = build_prompt(question, chunks, expanded.graph_context)
+        prompt = build_prompt(question, chunks, execution.result.graph_context)
         raw = self._llm.generate(prompt)
 
         answer_text, positions = _parse_footer(raw)
         cited = _valid_positions(positions, len(chunks))
         if not cited:
             # USED_CHUNKS: NONE, or a missing/malformed/out-of-range footer.
-            return AnswerResult(answer=answer_text, sources=[], grounded=False)
+            explanation = self._explain(
+                execution, reranked_count=len(chunks), llm_consulted=True,
+                grounded=False, citation_count=0,
+            )
+            return AnswerResult(
+                answer=answer_text, sources=[], grounded=False,
+                explanation=explanation,
+            )
 
         sources = self._build_sources(cited, chunks)
-        return AnswerResult(answer=answer_text, sources=sources, grounded=True)
+        explanation = self._explain(
+            execution, reranked_count=len(chunks), llm_consulted=True,
+            grounded=True, citation_count=len(sources),
+        )
+        return AnswerResult(
+            answer=answer_text, sources=sources, grounded=True,
+            explanation=explanation,
+        )
+
+    def _explain(
+        self,
+        execution: RetrievalExecution,
+        *,
+        reranked_count: int,
+        llm_consulted: bool,
+        grounded: bool,
+        citation_count: int,
+    ) -> Explanation:
+        """Assemble the Explanation from observed read-path facts (T5.1)."""
+        routing = execution.routing
+        result = execution.result
+        return Explanation(
+            timestamp=self._clock.now().isoformat(),
+            strategy=routing.strategy.value,
+            reason=routing.reason,
+            retrieved_count=len(result.chunks),
+            graph_expanded=routing.strategy is Strategy.GRAPH,
+            graph_relation_count=len(result.graph_context),
+            reranked_count=reranked_count,
+            llm_consulted=llm_consulted,
+            grounded=grounded,
+            citation_count=citation_count,
+        )
 
     def _build_sources(
         self, positions: list[int], chunks: list[RetrievalResult]
