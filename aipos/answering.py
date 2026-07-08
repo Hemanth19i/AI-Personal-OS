@@ -6,7 +6,8 @@ into a grounded, cited answer (Design Doc §A6):
     (chunks + graph context) -> rerank chunks -> build grounded prompt -> LLM
         -> citation build -> AnswerResult
 
-Retrieval orchestration lives upstream in ``GraphRetriever`` (T4.3), so this
+Retrieval orchestration lives upstream behind the ``Retriever`` protocol — the
+intent-routed ``RoutedRetriever`` (T4.4) over ``GraphRetriever`` (T4.3) — so this
 module stays responsible for answer generation, not retrieval. A synchronous
 direct call (ADR-004). It owns no storage engine and writes no SQL or vectors —
 SQL stays in ``storage.py`` and LanceDB in ``vector_store.py``; this module only
@@ -25,7 +26,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from aipos.graph_retrieval import GraphRetriever
+from aipos.graph_retrieval import Retriever
 from aipos.llm import LLM
 from aipos.prompt_builder import USED_CHUNKS_HEADER, build_prompt
 from aipos.reranking import Reranker
@@ -62,7 +63,7 @@ class AnswerService:
 
     def __init__(
         self,
-        retriever: GraphRetriever,
+        retriever: Retriever,
         reranker: Reranker,
         llm: LLM,
         storage: SQLiteStorage,

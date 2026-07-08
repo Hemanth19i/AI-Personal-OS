@@ -10,7 +10,13 @@ import unittest
 from pathlib import Path
 
 from aipos.extraction import Entity, Relationship
-from aipos.graph_retrieval import ExpandedRetrievalResult, GraphExpander, GraphRetriever
+from aipos.graph_retrieval import (
+    ExpandedRetrievalResult,
+    GraphExpander,
+    GraphRetriever,
+    RoutedRetriever,
+)
+from aipos.intent import RoutingDecision, Strategy
 from aipos.retrieval import DEFAULT_TOP_K, RetrievalResult
 from aipos.storage import GraphRelation, SQLiteStorage
 
@@ -131,6 +137,80 @@ class GraphRetrieverTests(unittest.TestCase):
         result = GraphRetriever(semantic, expander).retrieve("q")
         self.assertEqual(result.chunks, [])
         self.assertEqual(result.graph_context, [])
+
+
+class _FakeRouter:
+    """Returns a fixed RoutingDecision and records the queries it saw."""
+
+    def __init__(self, decision: RoutingDecision) -> None:
+        self._decision = decision
+        self.seen: list[str] = []
+
+    def route(self, query: str) -> RoutingDecision:
+        self.seen.append(query)
+        return self._decision
+
+
+class _FakeGraph:
+    """Duck-types GraphRetriever: returns a fixed ExpandedRetrievalResult."""
+
+    def __init__(self, result: ExpandedRetrievalResult) -> None:
+        self._result = result
+        self.calls: list[tuple[str, int]] = []
+
+    def retrieve(self, query: str, *, k: int = DEFAULT_TOP_K) -> ExpandedRetrievalResult:
+        self.calls.append((query, k))
+        return self._result
+
+
+class RoutedRetrieverTests(unittest.TestCase):
+    def test_semantic_strategy_skips_the_graph_path(self) -> None:
+        chunks = [_chunk("x", 1)]
+        semantic = _FakeSemantic(chunks)
+        graph = _FakeGraph(
+            ExpandedRetrievalResult([_chunk("nope", 9)], [GraphRelation("a", "r", "b", 1)])
+        )
+        router = _FakeRouter(RoutingDecision(Strategy.SEMANTIC, "factual"))
+        result = RoutedRetriever(router, semantic, graph).retrieve("who made x?", k=3)
+        self.assertEqual(result.chunks, chunks)
+        self.assertEqual(result.graph_context, [])  # semantic path -> no graph context
+        self.assertEqual(graph.calls, [])  # graph retriever never consulted
+        self.assertEqual(semantic.calls, [("who made x?", 3)])
+
+    def test_graph_strategy_delegates_to_graph_retriever(self) -> None:
+        expanded = ExpandedRetrievalResult([_chunk("x", 1)], [GraphRelation("a", "r", "b", 2)])
+        semantic = _FakeSemantic([])
+        graph = _FakeGraph(expanded)
+        router = _FakeRouter(RoutingDecision(Strategy.GRAPH, "relationship keyword"))
+        result = RoutedRetriever(router, semantic, graph).retrieve("how do a and b relate?", k=5)
+        self.assertIs(result, expanded)
+        self.assertEqual(graph.calls, [("how do a and b relate?", 5)])
+        self.assertEqual(semantic.calls, [])  # semantic-only path not taken
+
+    def test_logs_strategy_reason_and_query(self) -> None:
+        semantic = _FakeSemantic([])
+        graph = _FakeGraph(ExpandedRetrievalResult([], []))
+        router = _FakeRouter(
+            RoutingDecision(Strategy.SEMANTIC, "short keyword-style query")
+        )
+        routed = RoutedRetriever(router, semantic, graph)
+        with self.assertLogs("aipos.graph_retrieval", level="INFO") as captured:
+            routed.retrieve("kubernetes creator")
+        blob = "\n".join(captured.output)
+        self.assertIn("SEMANTIC", blob)
+        self.assertIn("short keyword-style query", blob)
+        self.assertIn("kubernetes creator", blob)
+
+    def test_router_sees_the_query(self) -> None:
+        router = _FakeRouter(RoutingDecision(Strategy.SEMANTIC, "x"))
+        RoutedRetriever(router, _FakeSemantic([]), _FakeGraph(ExpandedRetrievalResult([], []))).retrieve("q")
+        self.assertEqual(router.seen, ["q"])
+
+    def test_default_k_forwarded_on_graph_path(self) -> None:
+        graph = _FakeGraph(ExpandedRetrievalResult([], []))
+        router = _FakeRouter(RoutingDecision(Strategy.GRAPH, "rel"))
+        RoutedRetriever(router, _FakeSemantic([]), graph).retrieve("how do a and b relate?")
+        self.assertEqual(graph.calls[0][1], DEFAULT_TOP_K)
 
 
 if __name__ == "__main__":

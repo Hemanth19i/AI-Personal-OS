@@ -20,7 +20,8 @@ from pathlib import Path
 from aipos.answering import AnswerResult, AnswerService
 from aipos.config import load_config
 from aipos.embedding import OllamaEmbedder
-from aipos.graph_retrieval import GraphExpander, GraphRetriever
+from aipos.graph_retrieval import GraphExpander, GraphRetriever, RoutedRetriever
+from aipos.intent import HeuristicIntentRouter
 from aipos.llm import OllamaLLM
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.reranking import LexicalReranker
@@ -62,9 +63,10 @@ def _build_answer_service() -> AnswerService:
 
     embedder = OllamaEmbedder(config.embedding_model)
     semantic = SemanticRetriever(embedder, vector_store, storage)
-    # Graph-aware retrieval (T4.3): semantic hits + graph context, composed
-    # upstream of answer generation.
-    retriever = GraphRetriever(semantic, GraphExpander(storage))
+    graph = GraphRetriever(semantic, GraphExpander(storage))
+    # Intent routing (T4.4): a heuristic router picks the semantic or graph path
+    # per query, upstream of answer generation.
+    retriever = RoutedRetriever(HeuristicIntentRouter(), semantic, graph)
     reranker = LexicalReranker()
     llm = OllamaLLM(config.llm_model)
     return AnswerService(retriever, reranker, llm, storage)
