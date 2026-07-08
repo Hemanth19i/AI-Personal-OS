@@ -13,9 +13,18 @@ free-form ``[1]`` markers.
 from __future__ import annotations
 
 from aipos.retrieval import RetrievalResult
+from aipos.storage import GraphRelation
 
 # The exact marker the answer must end with; the citation builder splits on it.
 USED_CHUNKS_HEADER = "USED_CHUNKS:"
+
+# Heading for the optional graph-context block (T4.3). Framed as supporting
+# context only: the model may use it to reason about relationships, but
+# citations still come from the numbered chunks above it.
+_GRAPH_CONTEXT_HEADER = (
+    "Related facts from the knowledge graph "
+    "(supporting context only; cite only the numbered context above):"
+)
 
 _INSTRUCTIONS = (
     "You are a careful assistant answering strictly from the provided context.\n"
@@ -32,13 +41,19 @@ _INSTRUCTIONS = (
 )
 
 
-def build_prompt(question: str, chunks: list[RetrievalResult]) -> str:
+def build_prompt(
+    question: str,
+    chunks: list[RetrievalResult],
+    graph_context: list[GraphRelation] | None = None,
+) -> str:
     """Build the grounded prompt for ``question`` over ``chunks``.
 
     Chunks are presented in the given (reranked) order and numbered from 1; those
     1-based numbers are the citation keys the model echoes in the ``USED_CHUNKS``
-    footer. The function is pure and deterministic — identical inputs yield an
-    identical prompt.
+    footer. ``graph_context`` (T4.3) is optional supporting context — relationship
+    triples rendered as plain facts, never numbered and never cited. When it is
+    absent (the default) the prompt is byte-identical to the pre-T4.3 prompt. The
+    function is pure and deterministic — identical inputs yield an identical prompt.
     """
     context_blocks = [
         f"[{position}] {chunk.text}"
@@ -48,6 +63,18 @@ def build_prompt(question: str, chunks: list[RetrievalResult]) -> str:
     return (
         f"{_INSTRUCTIONS}\n\n"
         f"Context:\n{context}\n\n"
+        f"{_graph_block(graph_context)}"
         f"Question: {question}\n\n"
         "Answer:"
     )
+
+
+def _graph_block(graph_context: list[GraphRelation] | None) -> str:
+    """Render the graph-context section, or '' when there is none."""
+    if not graph_context:
+        return ""
+    lines = "\n".join(
+        f"- {relation.source} {relation.relation} {relation.target}"
+        for relation in graph_context
+    )
+    return f"{_GRAPH_CONTEXT_HEADER}\n{lines}\n\n"

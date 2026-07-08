@@ -20,6 +20,7 @@ from pathlib import Path
 from aipos.answering import AnswerResult, AnswerService
 from aipos.config import load_config
 from aipos.embedding import OllamaEmbedder
+from aipos.graph_retrieval import GraphExpander, GraphRetriever
 from aipos.llm import OllamaLLM
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.reranking import LexicalReranker
@@ -60,7 +61,10 @@ def _build_answer_service() -> AnswerService:
     vector_store.connect()
 
     embedder = OllamaEmbedder(config.embedding_model)
-    retriever = SemanticRetriever(embedder, vector_store, storage)
+    semantic = SemanticRetriever(embedder, vector_store, storage)
+    # Graph-aware retrieval (T4.3): semantic hits + graph context, composed
+    # upstream of answer generation.
+    retriever = GraphRetriever(semantic, GraphExpander(storage))
     reranker = LexicalReranker()
     llm = OllamaLLM(config.llm_model)
     return AnswerService(retriever, reranker, llm, storage)

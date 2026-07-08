@@ -4,6 +4,7 @@ import unittest
 
 from aipos.prompt_builder import USED_CHUNKS_HEADER, build_prompt
 from aipos.retrieval import RetrievalResult
+from aipos.storage import GraphRelation
 
 
 def _result(chunk_id: int, text: str) -> RetrievalResult:
@@ -42,6 +43,30 @@ class BuildPromptTests(unittest.TestCase):
         prompt = build_prompt("q?", [])
         self.assertIn("(no context)", prompt)
         self.assertIn(USED_CHUNKS_HEADER, prompt)
+
+    # --- graph context (T4.3) ---
+
+    def test_no_graph_context_is_backward_compatible(self) -> None:
+        # Absent or empty graph context yields the exact pre-T4.3 prompt.
+        base = build_prompt("q?", self.chunks)
+        self.assertEqual(build_prompt("q?", self.chunks, None), base)
+        self.assertEqual(build_prompt("q?", self.chunks, []), base)
+
+    def test_graph_context_renders_relationship_facts(self) -> None:
+        gc = [
+            GraphRelation("ZTNA", "protects", "Network", 3),
+            GraphRelation("Alice", "mentions", "ZTNA", 1),
+        ]
+        prompt = build_prompt("q?", self.chunks, gc)
+        self.assertIn("- ZTNA protects Network", prompt)
+        self.assertIn("- Alice mentions ZTNA", prompt)
+
+    def test_graph_lines_are_not_numbered_citation_chunks(self) -> None:
+        # Graph facts are bullets, keeping the numbered citation space to chunks.
+        gc = [GraphRelation("ZTNA", "protects", "Network", 3)]
+        prompt = build_prompt("q?", self.chunks, gc)
+        self.assertIn("[1] alpha fact", prompt)  # chunks still numbered
+        self.assertNotIn("[3] ZTNA", prompt)  # graph fact is not a numbered chunk
 
 
 if __name__ == "__main__":

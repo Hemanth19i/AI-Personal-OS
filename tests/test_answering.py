@@ -11,21 +11,29 @@ from pathlib import Path
 
 from aipos.answering import AnswerService, Source
 from aipos.chunking import Chunk
+from aipos.graph_retrieval import ExpandedRetrievalResult
 from aipos.retrieval import RetrievalResult
-from aipos.storage import SQLiteStorage
+from aipos.storage import GraphRelation, SQLiteStorage
 from tests.llm_fakes import FailingLLM, FakeLLM
 
 
 class _FakeRetriever:
-    """Returns canned results and records the (question, k) it was asked."""
+    """Returns a canned ExpandedRetrievalResult and records the (question, k)."""
 
-    def __init__(self, results: list[RetrievalResult]) -> None:
+    def __init__(
+        self,
+        results: list[RetrievalResult],
+        graph_context: list[GraphRelation] | None = None,
+    ) -> None:
         self._results = results
+        self._graph_context = graph_context if graph_context is not None else []
         self.calls: list[tuple[str, int]] = []
 
-    def retrieve(self, query: str, *, k: int) -> list[RetrievalResult]:
+    def retrieve(self, query: str, *, k: int) -> ExpandedRetrievalResult:
         self.calls.append((query, k))
-        return list(self._results)
+        return ExpandedRetrievalResult(
+            chunks=list(self._results), graph_context=list(self._graph_context)
+        )
 
 
 class _PassthroughReranker:
@@ -55,8 +63,10 @@ class AnswerServiceTests(unittest.TestCase):
         self.storage.close()
         self._tmp.cleanup()
 
-    def _service(self, llm, results=None) -> AnswerService:
-        retriever = _FakeRetriever(results if results is not None else self.results)
+    def _service(self, llm, results=None, graph_context=None) -> AnswerService:
+        retriever = _FakeRetriever(
+            results if results is not None else self.results, graph_context
+        )
         self._retriever = retriever
         return AnswerService(retriever, self.reranker, llm, self.storage)
 
@@ -123,6 +133,28 @@ class AnswerServiceTests(unittest.TestCase):
         service = self._service(FakeLLM("a\nUSED_CHUNKS:\n1"))
         service.answer("what?", k=7)
         self.assertEqual(self._retriever.calls[0][1], 7)
+
+    # --- graph context (T4.3) ---
+
+    def test_graph_context_appears_in_prompt(self) -> None:
+        gc = [GraphRelation("alpha", "relates_to", "beta", 2)]
+        llm = FakeLLM("x\nUSED_CHUNKS:\n1")
+        self._service(llm, graph_context=gc).answer("what?")
+        self.assertIn("alpha relates_to beta", llm.prompts[0])
+
+    def test_graph_context_never_becomes_a_source(self) -> None:
+        # Graph context enriches the prompt but is never a citation source;
+        # sources still resolve only from the cited chunks.
+        gc = [GraphRelation("alpha", "relates_to", "beta", 2)]
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1")
+        result = self._service(llm, graph_context=gc).answer("what?")
+        self.assertEqual([s.chunk_id for s in result.sources], [self.records[0].id])
+        self.assertTrue(all(s.file == "/docs/a.pdf" for s in result.sources))
+
+    def test_no_graph_context_leaves_prompt_without_a_graph_section(self) -> None:
+        llm = FakeLLM("x\nUSED_CHUNKS:\n1")
+        self._service(llm).answer("what?")
+        self.assertNotIn("knowledge graph", llm.prompts[0].lower())
 
 
 if __name__ == "__main__":
