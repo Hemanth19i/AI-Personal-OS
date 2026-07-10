@@ -13,6 +13,8 @@ SQLite tables here, so all graph SQL stays in this single owner.
 ``get_in_progress_files`` (T6.1) is the read query crash recovery is built on;
 ``list_files_by_status`` (T6.2) is a generic single-status query — callers
 (e.g. ``ingest.find_unqueued_pdfs``) decide what a given status means to them.
+``backup_to`` (T6.3) is the one safe, engine-native way to copy the live
+database — ``aipos.backup``'s export/import orchestration builds on it.
 """
 
 from __future__ import annotations
@@ -227,6 +229,25 @@ class SQLiteStorage:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+    def backup_to(self, path: Path) -> None:
+        """Write a safe, consistent copy of the live database to ``path`` (T6.3).
+
+        Uses sqlite3's own online backup API (``Connection.backup()``), which
+        safely copies the database even while this connection is open and has
+        pending writes — unlike a raw file copy, which risks capturing a
+        torn/inconsistent snapshot mid-write. The source connection and its
+        data are unaffected. ``path``'s parent directory is created if needed;
+        an existing file at ``path`` is overwritten (the caller — T6.3's export
+        orchestration — always backs up to a fresh temp path).
+        """
+        connection = self._require_connection()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        target = sqlite3.connect(path)
+        try:
+            connection.backup(target)
+        finally:
+            target.close()
 
     def add_file(
         self,

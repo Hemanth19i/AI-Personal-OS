@@ -2,7 +2,8 @@
 
 Home for user-facing commands that operate on an already-built index, keeping
 ``main.py`` focused purely on watcher startup. Today it exposes ``ask`` (the
-T3.3 answer command) and ``retry`` (the T6.1 crash-recovery command);
+T3.3 answer command), ``retry`` (the T6.1 crash-recovery command), and
+``export``/``import`` (the T6.3 backup/restore commands);
 ``watch``/``index``/``status``/``doctor``/``benchmark`` land here in later
 milestones.
 
@@ -11,8 +12,11 @@ reranker, and LLM — into an ``AnswerService`` and prints the grounded answer
 with its sources. ``retry`` wires the ingest dependencies and calls
 ``aipos.ingest.retry_file`` for a failed file, printing its resulting status —
 the CLI stands in for the ``Retry`` button the not-yet-built Library UI
-pillar will eventually own (Design Doc §B4). Both commands separate wiring
-from rendering so tests can drive them with fakes (no Ollama, no LanceDB).
+pillar will eventually own (Design Doc §B4). ``export``/``import`` wire
+``aipos.backup``'s orchestration to the real database/vector-store paths — the
+CLI stands in for the not-yet-built Workspace switcher's export/restore
+actions (Design Doc §B8) the same way. All four commands separate wiring from
+rendering so tests can drive them with fakes (no Ollama, no LanceDB).
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import sys
 from pathlib import Path
 
 from aipos.answering import AnswerResult, AnswerService
+from aipos.backup import export_workspace, import_workspace
 from aipos.config import load_config
 from aipos.embedding import Embedder, OllamaEmbedder
 from aipos.explainability import Explanation
@@ -34,13 +39,22 @@ from aipos.ocr import OcrEngine, TesseractOcr
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.reranking import LexicalReranker
 from aipos.retrieval import SemanticRetriever
-from aipos.storage import FileRecord, SQLiteStorage
+from aipos.storage import DEFAULT_WORKSPACE_ID, FileRecord, SQLiteStorage
 from aipos.vector_store import LanceVectorStore, VectorStore
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # The ingest dependencies retry_file needs, in the order it takes them.
 IngestDependencies = tuple[SQLiteStorage, Embedder, VectorStore, OcrEngine, EntityExtractor]
+
+# (storage, vector_store_dir) export_workspace needs; storage must already be connected.
+ExportDependencies = tuple[SQLiteStorage, Path]
+
+# (db_path, vector_store_dir) import_workspace needs — raw paths, deliberately
+# NOT a connected SQLiteStorage: connecting would create the database file at
+# db_path, which would make import_workspace's "target must not exist yet"
+# check always fail.
+ImportDependencies = tuple[Path, Path]
 
 
 def render_answer(result: AnswerResult) -> str:
@@ -124,6 +138,18 @@ def run_retry(
     return render_retry_result(file_id, storage.get_file(file_id))
 
 
+def run_export(storage: SQLiteStorage, vector_store_dir: Path, destination: Path) -> str:
+    """Export the (Phase 1, single) workspace to an archive (T6.3)."""
+    export_workspace(DEFAULT_WORKSPACE_ID, storage, vector_store_dir, destination)
+    return f"Exported workspace to {destination}"
+
+
+def run_import(source: Path, db_path: Path, vector_store_dir: Path) -> str:
+    """Import a workspace archive into a clean install (T6.3)."""
+    import_workspace(source, db_path, vector_store_dir)
+    return f"Imported workspace from {source} into {db_path.parent}"
+
+
 def _build_answer_service() -> AnswerService:
     """Wire the real read-path dependencies from config."""
     config = load_config(PROJECT_ROOT)
@@ -163,13 +189,41 @@ def _build_ingest_dependencies() -> IngestDependencies:
     return storage, embedder, vector_store, ocr, extractor
 
 
+def _build_export_dependencies() -> ExportDependencies:
+    """Wire the real, connected storage + vector-store path for ``export``."""
+    config = load_config(PROJECT_ROOT)
+    ensure_app_directories(config)
+
+    storage = SQLiteStorage(database_path(config))
+    storage.connect()
+
+    return storage, vector_store_path(config)
+
+
+def _resolve_data_paths() -> ImportDependencies:
+    """Resolve the db/vector-store target paths from config, for ``import``.
+
+    Does not connect a SQLiteStorage — see ``ImportDependencies``'s docstring
+    for why: import needs these paths to not yet exist.
+    """
+    config = load_config(PROJECT_ROOT)
+    ensure_app_directories(config)
+    return database_path(config), vector_store_path(config)
+
+
 def main(
     argv: list[str] | None = None,
     *,
     service: AnswerService | None = None,
     ingest_deps: IngestDependencies | None = None,
+    export_deps: ExportDependencies | None = None,
+    import_deps: ImportDependencies | None = None,
 ) -> int:
-    """CLI entry point. Inject ``service``/``ingest_deps`` to bypass real-backend wiring (tests)."""
+    """CLI entry point.
+
+    Inject ``service``/``ingest_deps``/``export_deps``/``import_deps`` to
+    bypass real-backend wiring (tests).
+    """
     # Force UTF-8 output: on Windows, stdout defaults to a legacy code page
     # (e.g. cp1252) which mangles the em dash / ellipsis in rendered answers.
     if hasattr(sys.stdout, "reconfigure"):
@@ -188,6 +242,14 @@ def main(
     retry_parser.add_argument(
         "file_id", type=int, help="The id of the failed file to retry"
     )
+    export_parser = subparsers.add_parser(
+        "export", help="Export the workspace to a .zip archive"
+    )
+    export_parser.add_argument("path", help="Destination path for the export archive")
+    import_parser = subparsers.add_parser(
+        "import", help="Import a workspace archive into a clean install"
+    )
+    import_parser.add_argument("path", help="Source archive path to import from")
     args = parser.parse_args(argv)
 
     if args.command == "ask":
@@ -202,6 +264,14 @@ def main(
             run_retry(args.file_id, storage, embedder, vector_store, ocr, extractor),
             flush=True,
         )
+        return 0
+    if args.command == "export":
+        storage, vs_path = export_deps if export_deps is not None else _build_export_dependencies()
+        print(run_export(storage, vs_path, Path(args.path)), flush=True)
+        return 0
+    if args.command == "import":
+        db_path, vs_path = import_deps if import_deps is not None else _resolve_data_paths()
+        print(run_import(Path(args.path), db_path, vs_path), flush=True)
         return 0
     return 1  # unreachable: argparse enforces a known command
 

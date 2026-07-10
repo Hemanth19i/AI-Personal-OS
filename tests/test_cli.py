@@ -231,5 +231,112 @@ class RetryCommandTests(unittest.TestCase):
         self.assertIn("No file with id=999999.", buffer.getvalue())
 
 
+class ExportImportCommandTests(unittest.TestCase):
+    """T6.3: real temp SQLiteStorage + plain directories standing in for the
+    vector store (aipos.backup never imports lancedb — see test_backup.py)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.storage = SQLiteStorage(self.root / "aipos.db")
+        self.storage.connect()
+        self.vectors_dir = self.root / "vectors"
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        self._tmp.cleanup()
+
+    def test_run_export_creates_archive_and_reports_destination(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        destination = self.root / "backup.zip"
+        out = cli.run_export(self.storage, self.vectors_dir, destination)
+        self.assertTrue(destination.exists())
+        self.assertIn(str(destination), out)
+
+    def test_run_import_restores_and_reports_target(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        archive = self.root / "backup.zip"
+        cli.run_export(self.storage, self.vectors_dir, archive)
+
+        target_db = self.root / "clean" / "aipos.db"
+        target_vectors = self.root / "clean" / "vectors"
+        out = cli.run_import(archive, target_db, target_vectors)
+        self.assertTrue(target_db.exists())
+        self.assertIn(str(archive), out)
+        self.assertIn(str(target_db.parent), out)
+
+    def test_main_export_dispatches_and_prints(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        destination = self.root / "backup.zip"
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(
+                ["export", str(destination)],
+                export_deps=(self.storage, self.vectors_dir),
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(destination.exists())
+        self.assertIn("Exported workspace", buffer.getvalue())
+
+    def test_main_import_dispatches_and_prints(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        archive = self.root / "backup.zip"
+        cli.run_export(self.storage, self.vectors_dir, archive)
+
+        target_db = self.root / "clean" / "aipos.db"
+        target_vectors = self.root / "clean" / "vectors"
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(
+                ["import", str(archive)], import_deps=(target_db, target_vectors)
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(target_db.exists())
+        self.assertIn("Imported workspace", buffer.getvalue())
+
+    def test_main_import_refuses_existing_install_with_clear_error(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        archive = self.root / "backup.zip"
+        cli.run_export(self.storage, self.vectors_dir, archive)
+
+        existing_db = self.root / "occupied" / "aipos.db"
+        existing_db.parent.mkdir(parents=True, exist_ok=True)
+        existing_db.write_bytes(b"already here")
+        existing_vectors = self.root / "occupied" / "vectors"
+
+        with self.assertRaises(RuntimeError) as ctx:
+            cli.main(
+                ["import", str(archive)],
+                import_deps=(existing_db, existing_vectors),
+            )
+        self.assertIn(str(existing_db), str(ctx.exception))  # clear, specific error
+
+    def test_round_trip_via_cli_into_a_clean_temporary_install(self) -> None:
+        # Full round trip driven entirely through the CLI surface.
+        file_id = self.storage.add_file(path="/docs/a.pdf", file_hash="abc123")
+        self.vectors_dir.mkdir(parents=True)
+        (self.vectors_dir / "table.lance").mkdir()
+        (self.vectors_dir / "table.lance" / "data.bin").write_bytes(b"vec-bytes")
+
+        archive = self.root / "backup.zip"
+        cli.main(["export", str(archive)], export_deps=(self.storage, self.vectors_dir))
+
+        clean_db = self.root / "clean_install" / "aipos.db"
+        clean_vectors = self.root / "clean_install" / "vectors"
+        cli.main(["import", str(archive)], import_deps=(clean_db, clean_vectors))
+
+        restored = SQLiteStorage(clean_db)
+        restored.connect()
+        try:
+            record = restored.get_file(file_id)
+            self.assertIsNotNone(record)
+            self.assertEqual(record.path, "/docs/a.pdf")
+        finally:
+            restored.close()
+        self.assertEqual(
+            (clean_vectors / "table.lance" / "data.bin").read_bytes(), b"vec-bytes"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
