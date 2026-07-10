@@ -47,7 +47,7 @@ def render_answer(result: AnswerResult) -> str:
 
 
 def render_explanation(explanation: Explanation) -> str:
-    """Format an ``Explanation`` for the terminal (the T5.1 reasoning trace)."""
+    """Format an ``Explanation`` for the terminal (the T5.1-T5.3 reasoning trace)."""
     graph = (
         f"{explanation.graph_relation_count} relation(s)"
         if explanation.graph_expanded
@@ -59,6 +59,7 @@ def render_explanation(explanation: Explanation) -> str:
         llm = "grounded answer generated"
     else:
         llm = "answer generated (not grounded)"
+    evidence = explanation.evidence
     return "\n".join(
         [
             "Explanation:",
@@ -71,6 +72,12 @@ def render_explanation(explanation: Explanation) -> str:
             f"  Sources:         {explanation.citation_count} citation(s)",
             f"  Confidence:      {explanation.confidence.value}",
             f"  Timestamp:       {explanation.timestamp}",
+            "",
+            "Evidence",
+            "---------",
+            f"Verified: {'yes' if evidence.verified else 'no'}",
+            f"Reason: {evidence.reason}",
+            f"Verified citations: {evidence.verified_citations}/{evidence.total_citations}",
         ]
     )
 
