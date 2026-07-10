@@ -20,7 +20,7 @@ from pathlib import Path
 from aipos.config import load_config
 from aipos.embedding import OllamaEmbedder
 from aipos.extraction import LLMEntityExtractor
-from aipos.ingest import process_file
+from aipos.ingest import process_file, resume_pending
 from aipos.llm import OllamaLLM
 from aipos.ocr import TesseractOcr
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
@@ -72,6 +72,12 @@ def main() -> None:
     # Entity extraction reuses the existing LLM abstraction (no new backend);
     # the same Ollama model that answers questions extracts the graph.
     extractor = LLMEntityExtractor(OllamaLLM(config.llm_model))
+
+    # Crash recovery (T6.1): resume any file a previous run left mid-pipeline,
+    # once, before accepting new files — so killing the process mid-ingest and
+    # restarting resumes cleanly (Design Doc §A5, PRD §7.1).
+    resume_pending(storage, embedder, vector_store, ocr, extractor)
+
     source = FolderSource(config.watched_folder)
     source.watch(
         lambda path: process_file(

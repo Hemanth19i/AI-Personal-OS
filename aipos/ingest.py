@@ -7,6 +7,12 @@ the "skip if the hash is already registered" decision (T1.4) and driving the
 file through its lifecycle during parsing (T2.2).
 
 Called for each file that has passed the write-completion guard.
+
+T6.1 adds crash recovery (PRD §7.1 "Failure philosophy"): ``resume_pending``
+sweeps files a previous run left mid-pipeline and resumes each from its last
+good state, and ``retry_file`` re-runs a failed file on request. Both reuse the
+same two stages ``_process_pdf`` is built from (split out for T6.1) so a file
+that already has persisted chunks is never re-parsed or re-chunked.
 """
 
 from __future__ import annotations
@@ -79,13 +85,35 @@ def _process_pdf(
     ocr: OcrEngine,
     extractor: EntityExtractor,
 ) -> None:
+    """Run a freshly registered PDF through the full pipeline (T2.1..T4.2).
+
+    Composed of the two stages T6.1 split out below so crash recovery can reuse
+    the second stage on its own, without re-parsing or re-chunking.
+    """
+    if not _parse_and_chunk(file_id, path, storage, ocr):
+        return
+    _embed_extract(file_id, path, storage, embedder, vector_store, extractor)
+
+
+def _parse_and_chunk(
+    file_id: int,
+    path: Path,
+    storage: SQLiteStorage,
+    ocr: OcrEngine,
+) -> bool:
+    """Parse a PDF (falling back to OCR) and persist its chunks.
+
+    Drives PARSING -> [OCR] -> CHUNKING (Design Doc §A5). Returns True once
+    chunks are persisted; False if any step failed — the file is already
+    marked FAILED with the error recorded, and the caller should stop.
+    """
     storage.update_status(file_id, FileStatus.PARSING)
     try:
         text = parse_pdf(path)
     except Exception as error:
         logger.exception("PDF parse failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
-        return
+        return False
 
     if not text.strip():
         # No extractable text layer — likely a scanned PDF. Recover text via
@@ -96,7 +124,7 @@ def _process_pdf(
         except Exception as error:
             logger.exception("OCR failed: %s", path)
             storage.update_status(file_id, FileStatus.FAILED, error=str(error))
-            return
+            return False
 
     storage.update_status(file_id, FileStatus.CHUNKING)
     try:
@@ -104,8 +132,27 @@ def _process_pdf(
     except Exception as error:
         logger.exception("Chunking/persistence failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
-        return
+        return False
 
+    return True
+
+
+def _embed_extract(
+    file_id: int,
+    path: Path,
+    storage: SQLiteStorage,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    extractor: EntityExtractor,
+) -> bool:
+    """Embed a file's persisted chunks, extract its graph, and mark it ready.
+
+    Drives EMBEDDING -> EXTRACTING -> READY (Design Doc §A5/§A4) over the
+    chunks already persisted for ``file_id`` — fetched fresh here, so this
+    stage stands alone for crash recovery (T6.1): it never re-parses or
+    re-chunks. Returns True on success; False if any step failed — the file
+    is already marked FAILED with the error recorded.
+    """
     storage.update_status(file_id, FileStatus.EMBEDDING)
     try:
         # Embed the persisted chunks and store each vector keyed by chunk_id.
@@ -115,7 +162,7 @@ def _process_pdf(
     except Exception as error:
         logger.exception("Embedding/vector persistence failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
-        return
+        return False
 
     storage.update_status(file_id, FileStatus.EXTRACTING)
     try:
@@ -139,7 +186,7 @@ def _process_pdf(
     except Exception as error:
         logger.exception("Entity extraction/persistence failed: %s", path)
         storage.update_status(file_id, FileStatus.FAILED, error=str(error))
-        return
+        return False
 
     storage.update_status(file_id, FileStatus.READY)
     logger.info(
@@ -152,3 +199,98 @@ def _process_pdf(
         len(relationships),
         path,
     )
+    return True
+
+
+def resume_pending(
+    storage: SQLiteStorage,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    ocr: OcrEngine,
+    extractor: EntityExtractor,
+) -> None:
+    """Resume every file a previous run left mid-pipeline (T6.1).
+
+    Sweeps ``storage.get_in_progress_files()`` — files started but not yet
+    ready or failed — and resumes each from its last good state via
+    ``_resume_file``: chunks already persisted are reused (never re-parsed or
+    re-chunked); otherwise the file restarts cleanly from parsing. Intended to
+    run once at startup, before the watcher begins accepting new files, so a
+    killed-and-restarted process resumes cleanly (Design Doc §A5, PRD §7.1).
+
+    Isolated per file: one file that fails to resume is marked FAILED (by the
+    stage it fails in) and never blocks the rest of the sweep. Idempotent —
+    once every in-progress file reaches READY or FAILED, a second call finds
+    nothing to sweep and does nothing.
+    """
+    in_progress = storage.get_in_progress_files()
+    if not in_progress:
+        return
+    logger.info(
+        "Resuming %d file(s) left in progress by a previous run", len(in_progress)
+    )
+    for record in in_progress:
+        try:
+            _resume_file(record, storage, embedder, vector_store, ocr, extractor)
+        except Exception:
+            # Defensive safety net beyond each stage's own error handling, so a
+            # truly unexpected failure for one file can never halt the sweep.
+            logger.exception(
+                "Unexpected error resuming file id=%d: %s", record.id, record.path
+            )
+
+
+def retry_file(
+    file_id: int,
+    storage: SQLiteStorage,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    ocr: OcrEngine,
+    extractor: EntityExtractor,
+) -> None:
+    """Retry a failed file on request (T6.1; Design Doc §A3's ``retry_file``).
+
+    A no-op — logged, not raised — for an unknown file id or a file whose
+    status is not FAILED; retry is only meaningful for a failed file. A
+    successful retry resumes from the last good state exactly like
+    ``resume_pending``'s per-file logic, and the previous error is cleared
+    automatically once a new status is written (``update_status``'s existing
+    behaviour).
+    """
+    record = storage.get_file(file_id)
+    if record is None:
+        logger.info("Retry requested for unknown file id=%d; skipping", file_id)
+        return
+    if record.status != FileStatus.FAILED:
+        logger.info(
+            "Retry requested for file id=%d but status is %s (not failed); skipping",
+            file_id,
+            record.status,
+        )
+        return
+    _resume_file(record, storage, embedder, vector_store, ocr, extractor)
+
+
+def _resume_file(
+    record: FileRecord,
+    storage: SQLiteStorage,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    ocr: OcrEngine,
+    extractor: EntityExtractor,
+) -> None:
+    """Resume or retry one file from its last good state (T6.1).
+
+    If chunks already exist for the file, parsing/OCR/chunking are known to
+    have already completed — skip straight to embedding/extraction, never
+    re-parsing or re-chunking (chunk storage does not deduplicate, T2.4).
+    Otherwise restart cleanly from parsing: parsing/OCR are pure reads with no
+    DB side effects, so redoing them is always safe.
+    """
+    path = Path(record.path)
+    if storage.get_chunk_records(record.id):
+        _embed_extract(record.id, path, storage, embedder, vector_store, extractor)
+        return
+    if not _parse_and_chunk(record.id, path, storage, ocr):
+        return
+    _embed_extract(record.id, path, storage, embedder, vector_store, extractor)

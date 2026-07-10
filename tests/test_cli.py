@@ -1,15 +1,26 @@
-"""Behaviour tests for the CLI `ask` command (T3.3).
+"""Behaviour tests for the CLI `ask` and `retry` commands (T3.3, T6.1).
 
-Driven with a fake AnswerService so no Ollama/LanceDB/SQLite wiring runs.
+`ask` is driven with a fake AnswerService so no Ollama/LanceDB/SQLite wiring
+runs. `retry` uses a real temp SQLiteStorage (lightweight, no external binary)
+with fake embedder/vector_store/ocr/extractor, mirroring test_ingest.py.
 """
 
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from aipos import cli
 from aipos.answering import AnswerResult, Source
 from aipos.explainability import Confidence, EvidenceVerification, Explanation
+from aipos.hashing import sha256_file
+from aipos.storage import FileRecord, FileStatus, SQLiteStorage
+from tests.embedder_fakes import DeterministicEmbedder
+from tests.extractor_fakes import RecordingExtractor
+from tests.ocr_fakes import RecordingOcr
+from tests.pdf_fixtures import make_text_pdf
+from tests.vector_store_fakes import RecordingVectorStore
 
 
 class _FakeAnswerService:
@@ -136,6 +147,88 @@ class AskCommandTests(unittest.TestCase):
         self.assertIn("Explanation:", buffer.getvalue())
         self.assertIn("Evidence", buffer.getvalue())
         self.assertIn("Verified: yes", buffer.getvalue())
+
+
+class RenderRetryResultTests(unittest.TestCase):
+    def test_unknown_file(self) -> None:
+        self.assertEqual(cli.render_retry_result(42, None), "No file with id=42.")
+
+    def test_renders_status_and_error(self) -> None:
+        record = FileRecord(
+            id=7, workspace_id="default", path="/a.pdf", hash="h",
+            status=FileStatus.FAILED, error="boom",
+            created_at="t", updated_at="t",
+        )
+        out = cli.render_retry_result(7, record)
+        self.assertIn("File id=7: failed", out)
+        self.assertIn("Error: boom", out)
+
+    def test_renders_status_without_error_line_when_none(self) -> None:
+        record = FileRecord(
+            id=7, workspace_id="default", path="/a.pdf", hash="h",
+            status=FileStatus.READY, error=None,
+            created_at="t", updated_at="t",
+        )
+        out = cli.render_retry_result(7, record)
+        self.assertIn("File id=7: ready", out)
+        self.assertNotIn("Error:", out)
+
+
+class RetryCommandTests(unittest.TestCase):
+    """Integration-level: real temp SQLiteStorage, fake embedder/vector_store/ocr/extractor."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.storage = SQLiteStorage(self.root / "aipos.db")
+        self.storage.connect()
+        self.embedder = DeterministicEmbedder()
+        self.vectors = RecordingVectorStore()
+        self.ocr = RecordingOcr()
+        self.extractor = RecordingExtractor()
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        self._tmp.cleanup()
+
+    def _seed_failed_file(self) -> int:
+        pdf = self.root / "a.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        file_id = self.storage.add_file(path=str(pdf), file_hash=sha256_file(pdf))
+        self.storage.update_status(file_id, FileStatus.FAILED, error="boom")
+        return file_id
+
+    def test_run_retry_reprocesses_a_failed_file(self) -> None:
+        file_id = self._seed_failed_file()
+        out = cli.run_retry(
+            file_id, self.storage, self.embedder, self.vectors, self.ocr, self.extractor
+        )
+        self.assertIn(f"File id={file_id}: ready", out)
+        self.assertIs(self.storage.get_file(file_id).status, FileStatus.READY)
+
+    def test_run_retry_unknown_id(self) -> None:
+        out = cli.run_retry(
+            999999, self.storage, self.embedder, self.vectors, self.ocr, self.extractor
+        )
+        self.assertEqual(out, "No file with id=999999.")
+
+    def test_main_retry_dispatches_and_prints(self) -> None:
+        file_id = self._seed_failed_file()
+        deps = (self.storage, self.embedder, self.vectors, self.ocr, self.extractor)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(["retry", str(file_id)], ingest_deps=deps)
+        self.assertEqual(code, 0)
+        self.assertIn(f"File id={file_id}: ready", buffer.getvalue())
+        self.assertIs(self.storage.get_file(file_id).status, FileStatus.READY)
+
+    def test_main_retry_unknown_id_dispatches_and_prints(self) -> None:
+        deps = (self.storage, self.embedder, self.vectors, self.ocr, self.extractor)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(["retry", "999999"], ingest_deps=deps)
+        self.assertEqual(code, 0)
+        self.assertIn("No file with id=999999.", buffer.getvalue())
 
 
 if __name__ == "__main__":

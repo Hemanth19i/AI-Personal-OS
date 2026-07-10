@@ -106,6 +106,71 @@ class SQLiteStorageTests(unittest.TestCase):
         after = self.storage.get_file(file_id).updated_at
         self.assertGreater(after, before)
 
+    # --- get_in_progress_files (T6.1 crash recovery) ---
+
+    def _file_at(self, status: FileStatus, *, path: str = "/a", file_hash: str | None = None) -> int:
+        file_id = self.storage.add_file(path=path, file_hash=file_hash or f"h-{path}-{status}")
+        self.storage.update_status(file_id, status)
+        return file_id
+
+    def test_returns_files_in_each_in_progress_status(self) -> None:
+        ids = [
+            self._file_at(status, path=f"/{status}.pdf")
+            for status in (
+                FileStatus.PARSING, FileStatus.OCR, FileStatus.CHUNKING,
+                FileStatus.EMBEDDING, FileStatus.EXTRACTING, FileStatus.VERIFYING,
+            )
+        ]
+        found = {r.id for r in self.storage.get_in_progress_files()}
+        self.assertEqual(found, set(ids))
+
+    def test_excludes_pending(self) -> None:
+        self.storage.add_file(path="/a.txt", file_hash="h")  # defaults to pending
+        self.assertEqual(self.storage.get_in_progress_files(), [])
+
+    def test_excludes_ready(self) -> None:
+        self._file_at(FileStatus.READY)
+        self.assertEqual(self.storage.get_in_progress_files(), [])
+
+    def test_excludes_failed(self) -> None:
+        self._file_at(FileStatus.FAILED)
+        self.assertEqual(self.storage.get_in_progress_files(), [])
+
+    def test_mixed_statuses_returns_only_in_progress(self) -> None:
+        pending = self.storage.add_file(path="/pending.txt", file_hash="p")
+        in_progress = self._file_at(FileStatus.CHUNKING, path="/chunking.pdf")
+        ready = self._file_at(FileStatus.READY, path="/ready.pdf")
+        failed = self._file_at(FileStatus.FAILED, path="/failed.pdf")
+        found = {r.id for r in self.storage.get_in_progress_files()}
+        self.assertEqual(found, {in_progress})
+        self.assertNotIn(pending, found)
+        self.assertNotIn(ready, found)
+        self.assertNotIn(failed, found)
+
+    def test_workspace_isolation(self) -> None:
+        connection = self.storage._require_connection()
+        connection.execute(
+            "INSERT INTO files (workspace_id, path, hash, status) VALUES (?, ?, ?, ?)",
+            ("other", "/other.pdf", "h-other", FileStatus.CHUNKING),
+        )
+        connection.commit()
+        self._file_at(FileStatus.CHUNKING, path="/mine.pdf")
+        default_ws = self.storage.get_in_progress_files()
+        other_ws = self.storage.get_in_progress_files(workspace_id="other")
+        self.assertEqual([r.path for r in default_ws], ["/mine.pdf"])
+        self.assertEqual([r.path for r in other_ws], ["/other.pdf"])
+
+    def test_deterministic_ordering_by_id(self) -> None:
+        first = self._file_at(FileStatus.CHUNKING, path="/1.pdf")
+        second = self._file_at(FileStatus.EMBEDDING, path="/2.pdf")
+        third = self._file_at(FileStatus.EXTRACTING, path="/3.pdf")
+        self.assertEqual(
+            [r.id for r in self.storage.get_in_progress_files()], [first, second, third]
+        )
+
+    def test_empty_when_no_files(self) -> None:
+        self.assertEqual(self.storage.get_in_progress_files(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
