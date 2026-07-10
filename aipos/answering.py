@@ -19,8 +19,11 @@ supporting context but is never reranked and never becomes a citation source
 (T4.3). Every answer now carries an ``Explanation`` (T5.1) — a deterministic
 record of the observable pipeline decisions (strategy, counts, grounding),
 built here because this is the one component that observes the whole read path.
-The qualitative confidence and graph_path detail of the frozen ``AnswerResult``
-(Design Doc §A7) remain later-ticket fields on that same ``Explanation``.
+Its qualitative ``confidence`` (T5.2) and structural ``evidence`` verification
+(T5.3) are both derived here from the same observed facts, by injected
+collaborators — never from model output. The detailed graph_path of the frozen
+``AnswerResult`` (Design Doc §A7) remains a later-ticket field on that same
+``Explanation``.
 """
 
 from __future__ import annotations
@@ -29,10 +32,13 @@ import re
 from dataclasses import dataclass
 
 from aipos.explainability import (
+    CitedChunk,
     Clock,
     ConfidenceCalculator,
+    EvidenceVerifier,
     Explanation,
     RuleBasedConfidenceCalculator,
+    RuleBasedEvidenceVerifier,
     SystemClock,
 )
 from aipos.graph_retrieval import RetrievalExecution, Retriever
@@ -86,6 +92,7 @@ class AnswerService:
         *,
         clock: Clock | None = None,
         confidence: ConfidenceCalculator | None = None,
+        verifier: EvidenceVerifier | None = None,
     ) -> None:
         self._retriever = retriever
         self._reranker = reranker
@@ -95,6 +102,7 @@ class AnswerService:
         self._confidence = (
             confidence if confidence is not None else RuleBasedConfidenceCalculator()
         )
+        self._verifier = verifier if verifier is not None else RuleBasedEvidenceVerifier()
 
     def answer(self, question: str, *, k: int = DEFAULT_TOP_K) -> AnswerResult:
         """Retrieve (with graph expansion), rerank, and generate a cited answer.
@@ -110,8 +118,8 @@ class AnswerService:
         chunks = self._reranker.rerank(question, execution.result.chunks)
         if not chunks:
             explanation = self._explain(
-                execution, reranked_count=0, llm_consulted=False,
-                grounded=False, citation_count=0,
+                execution, chunks=chunks, cited=[], reranked_count=0,
+                llm_consulted=False, grounded=False, citation_count=0,
             )
             return AnswerResult(
                 answer=_NO_CONTEXT_ANSWER, sources=[], grounded=False,
@@ -126,8 +134,8 @@ class AnswerService:
         if not cited:
             # USED_CHUNKS: NONE, or a missing/malformed/out-of-range footer.
             explanation = self._explain(
-                execution, reranked_count=len(chunks), llm_consulted=True,
-                grounded=False, citation_count=0,
+                execution, chunks=chunks, cited=cited, reranked_count=len(chunks),
+                llm_consulted=True, grounded=False, citation_count=0,
             )
             return AnswerResult(
                 answer=answer_text, sources=[], grounded=False,
@@ -136,8 +144,8 @@ class AnswerService:
 
         sources = self._build_sources(cited, chunks)
         explanation = self._explain(
-            execution, reranked_count=len(chunks), llm_consulted=True,
-            grounded=True, citation_count=len(sources),
+            execution, chunks=chunks, cited=cited, reranked_count=len(chunks),
+            llm_consulted=True, grounded=True, citation_count=len(sources),
         )
         return AnswerResult(
             answer=answer_text, sources=sources, grounded=True,
@@ -148,15 +156,20 @@ class AnswerService:
         self,
         execution: RetrievalExecution,
         *,
+        chunks: list[RetrievalResult],
+        cited: list[int],
         reranked_count: int,
         llm_consulted: bool,
         grounded: bool,
         citation_count: int,
     ) -> Explanation:
-        """Assemble the Explanation from observed read-path facts (T5.1/T5.2).
+        """Assemble the Explanation from observed read-path facts (T5.1-T5.3).
 
         Confidence (T5.2) is derived by the injected ``ConfidenceCalculator``
-        from these same observable facts — never from model output.
+        from observable facts — never from model output. Evidence (T5.3) is a
+        parallel, independent structural check of the citation chain built from
+        ``chunks`` (the retrieved/reranked candidates) and ``cited`` (their
+        1-based cited positions) — it never influences confidence.
         """
         routing = execution.routing
         result = execution.result
@@ -170,6 +183,14 @@ class AnswerService:
             retrieved_count=retrieved_count,
             reranked_count=reranked_count,
         )
+        evidence = self._verifier.verify(
+            grounded=grounded,
+            retrieved_chunk_ids=frozenset(chunk.chunk_id for chunk in chunks),
+            cited_chunks=[
+                CitedChunk(chunk_id=chunks[position - 1].chunk_id, text=chunks[position - 1].text)
+                for position in cited
+            ],
+        )
         return Explanation(
             timestamp=self._clock.now().isoformat(),
             strategy=routing.strategy.value,
@@ -182,6 +203,7 @@ class AnswerService:
             grounded=grounded,
             citation_count=citation_count,
             confidence=confidence,
+            evidence=evidence,
         )
 
     def _build_sources(

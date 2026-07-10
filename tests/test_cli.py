@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 
 from aipos import cli
 from aipos.answering import AnswerResult, Source
-from aipos.explainability import Confidence, Explanation
+from aipos.explainability import Confidence, EvidenceVerification, Explanation
 
 
 class _FakeAnswerService:
@@ -34,6 +34,10 @@ _EXPLANATION = Explanation(
     grounded=True,
     citation_count=1,
     confidence=Confidence.MEDIUM,
+    evidence=EvidenceVerification(
+        verified=True, reason="all 1 cited chunk(s) are structurally valid",
+        verified_citations=1, total_citations=1,
+    ),
 )
 
 _GROUNDED = AnswerResult(
@@ -71,6 +75,26 @@ class RenderExplanationTests(unittest.TestCase):
         self.assertIn("Sources:         1 citation(s)", out)
         self.assertIn("Confidence:      medium", out)
         self.assertIn("2026-01-02T03:04:05+00:00", out)
+        self.assertIn("Evidence", out)
+        self.assertIn("Verified: yes", out)
+        self.assertIn("Reason: all 1 cited chunk(s) are structurally valid", out)
+        self.assertIn("Verified citations: 1/1", out)
+
+    def test_renders_unverified_evidence(self) -> None:
+        unverified_explanation = Explanation(
+            timestamp="2026-01-02T03:04:05+00:00", strategy="semantic", reason="x",
+            retrieved_count=2, graph_expanded=False, graph_relation_count=0,
+            reranked_count=2, llm_consulted=True, grounded=False, citation_count=0,
+            confidence=Confidence.LOW,
+            evidence=EvidenceVerification(
+                verified=False, reason="answer is not grounded",
+                verified_citations=0, total_citations=0,
+            ),
+        )
+        out = cli.render_explanation(unverified_explanation)
+        self.assertIn("Verified: no", out)
+        self.assertIn("Reason: answer is not grounded", out)
+        self.assertIn("Verified citations: 0/0", out)
 
 
 class AskCommandTests(unittest.TestCase):
@@ -84,6 +108,7 @@ class AskCommandTests(unittest.TestCase):
         out = cli.run_ask("q", _FakeAnswerService(_GROUNDED))
         self.assertNotIn("Explanation:", out)
         self.assertNotIn("Confidence:", out)  # confidence lives in the trace only
+        self.assertNotIn("Evidence", out)  # evidence lives in the trace only
 
     def test_run_ask_with_explain_appends_the_trace(self) -> None:
         out = cli.run_ask("q", _FakeAnswerService(_GROUNDED), explain=True)
@@ -100,6 +125,7 @@ class AskCommandTests(unittest.TestCase):
         self.assertEqual(service.questions, ["what is alpha?"])
         self.assertIn("Grounded: yes", buffer.getvalue())
         self.assertNotIn("Explanation:", buffer.getvalue())  # no flag -> no trace
+        self.assertNotIn("Evidence", buffer.getvalue())
 
     def test_main_ask_explain_flag_dumps_the_trace(self) -> None:
         service = _FakeAnswerService(_GROUNDED)
@@ -108,6 +134,8 @@ class AskCommandTests(unittest.TestCase):
             code = cli.main(["ask", "what is alpha?", "--explain"], service=service)
         self.assertEqual(code, 0)
         self.assertIn("Explanation:", buffer.getvalue())
+        self.assertIn("Evidence", buffer.getvalue())
+        self.assertIn("Verified: yes", buffer.getvalue())
 
 
 if __name__ == "__main__":

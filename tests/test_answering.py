@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aipos.answering import AnswerService, Source
 from aipos.chunking import Chunk
-from aipos.explainability import Confidence, Explanation
+from aipos.explainability import CitedChunk, Confidence, EvidenceVerification, Explanation
 from aipos.graph_retrieval import ExpandedRetrievalResult, RetrievalExecution
 from aipos.intent import RoutingDecision, Strategy
 from aipos.retrieval import RetrievalResult
@@ -86,6 +86,7 @@ class AnswerServiceTests(unittest.TestCase):
     def _service(
         self, llm, results=None, graph_context=None, *,
         strategy=Strategy.SEMANTIC, reason="test-reason", clock=None, confidence=None,
+        verifier=None,
     ) -> AnswerService:
         retriever = _FakeRetriever(
             results if results is not None else self.results, graph_context,
@@ -94,7 +95,7 @@ class AnswerServiceTests(unittest.TestCase):
         self._retriever = retriever
         return AnswerService(
             retriever, self.reranker, llm, self.storage,
-            clock=clock, confidence=confidence,
+            clock=clock, confidence=confidence, verifier=verifier,
         )
 
     def test_grounded_answer_with_cited_sources(self) -> None:
@@ -292,6 +293,93 @@ class AnswerServiceTests(unittest.TestCase):
         self.assertEqual(facts["graph_relation_count"], 0)
         self.assertEqual(facts["retrieved_count"], 3)
         self.assertEqual(facts["reranked_count"], 3)
+
+    # --- evidence verification (T5.3) ---
+
+    def test_no_context_evidence_is_unverified(self) -> None:
+        result = self._service(FakeLLM("never"), results=[]).answer("what?")
+        evidence = result.explanation.evidence
+        self.assertFalse(evidence.verified)
+        self.assertEqual(evidence.reason, "answer is not grounded")
+        self.assertEqual(evidence.total_citations, 0)
+
+    def test_ungrounded_evidence_is_unverified(self) -> None:
+        result = self._service(FakeLLM("Answer.\nUSED_CHUNKS:\nNONE")).answer("what?")
+        evidence = result.explanation.evidence
+        self.assertFalse(evidence.verified)
+        self.assertEqual(evidence.reason, "answer is not grounded")
+
+    def test_grounded_evidence_is_verified(self) -> None:
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1,3")
+        result = self._service(llm).answer("what?")
+        evidence = result.explanation.evidence
+        self.assertTrue(evidence.verified)
+        self.assertEqual(evidence.verified_citations, 2)
+        self.assertEqual(evidence.total_citations, 2)
+
+    def test_evidence_reflects_actual_citations_independent_of_source_resolution(self) -> None:
+        # A cited chunk whose id has no matching row in storage (so it never
+        # resolves to a Source, and citation_count/sources come back empty) is
+        # still a real, retrieved, non-empty chunk structurally — evidence must
+        # verify it on its own terms, not on whether a Source was built.
+        ghost = RetrievalResult(chunk_id=999999, text="ghost text", score=0.0)
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1")
+        result = self._service(llm, results=[ghost]).answer("what?")
+        self.assertTrue(result.grounded)
+        self.assertEqual(result.sources, [])  # unresolvable file -> no Source
+        self.assertEqual(result.explanation.citation_count, 0)  # len(sources)
+        evidence = result.explanation.evidence
+        self.assertTrue(evidence.verified)  # the citation itself is structurally sound
+        self.assertEqual(evidence.total_citations, 1)
+
+    def test_evidence_verifier_is_injectable_and_used_verbatim(self) -> None:
+        class _RecordingVerifier:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def verify(self, **facts) -> EvidenceVerification:
+                self.calls.append(facts)
+                return EvidenceVerification(False, "forced by fake", 0, 0)
+
+        verifier = _RecordingVerifier()
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1,3")
+        result = self._service(llm, verifier=verifier).answer("what?")
+        self.assertEqual(result.explanation.evidence, EvidenceVerification(False, "forced by fake", 0, 0))
+        self.assertEqual(len(verifier.calls), 1)
+        facts = verifier.calls[0]
+        self.assertTrue(facts["grounded"])
+        self.assertEqual(facts["retrieved_chunk_ids"], frozenset(r.chunk_id for r in self.results))
+        self.assertEqual(
+            facts["cited_chunks"],
+            [
+                CitedChunk(self.results[0].chunk_id, self.results[0].text),
+                CitedChunk(self.results[2].chunk_id, self.results[2].text),
+            ],
+        )
+
+    def test_repeated_citations_from_llm_are_deduplicated_before_verification(self) -> None:
+        # The model citing the same chunk three times ("2,2,2") is deduplicated
+        # by the existing T3.3 _valid_positions step before evidence ever sees
+        # it, so it reaches the verifier as exactly one citation, not three.
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n2,2,2")
+        result = self._service(llm).answer("what?")
+        self.assertEqual([s.chunk_id for s in result.sources], [self.records[1].id])
+        evidence = result.explanation.evidence
+        self.assertTrue(evidence.verified)
+        self.assertEqual(evidence.verified_citations, 1)
+        self.assertEqual(evidence.total_citations, 1)
+
+    def test_evidence_does_not_influence_confidence(self) -> None:
+        # Confidence is computed purely from the T5.2 fact set; an "unverified"
+        # evidence result must not change it.
+        class _AlwaysUnverified:
+            def verify(self, **facts) -> EvidenceVerification:
+                return EvidenceVerification(False, "always unverified", 0, 0)
+
+        llm = FakeLLM("Answer.\nUSED_CHUNKS:\n1,3")
+        result = self._service(llm, verifier=_AlwaysUnverified()).answer("what?")
+        self.assertIs(result.explanation.confidence, Confidence.MEDIUM)  # unchanged from T5.2
+        self.assertFalse(result.explanation.evidence.verified)
 
 
 if __name__ == "__main__":

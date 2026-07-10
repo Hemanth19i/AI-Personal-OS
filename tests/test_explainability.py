@@ -1,16 +1,25 @@
-"""Behaviour tests for the Explanation model, Clock, and Confidence (T5.1/T5.2)."""
+"""Behaviour tests for Explanation, Clock, Confidence, and Evidence (T5.1-T5.3)."""
 
 import unittest
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 
 from aipos.explainability import (
+    CitedChunk,
     Clock,
     Confidence,
     ConfidenceCalculator,
+    EvidenceVerification,
+    EvidenceVerifier,
     Explanation,
     RuleBasedConfidenceCalculator,
+    RuleBasedEvidenceVerifier,
     SystemClock,
+)
+
+_VERIFIED = EvidenceVerification(
+    verified=True, reason="all 2 cited chunk(s) are structurally valid",
+    verified_citations=2, total_citations=2,
 )
 
 
@@ -43,6 +52,7 @@ class ExplanationTests(unittest.TestCase):
             grounded=True,
             citation_count=2,
             confidence=Confidence.HIGH,
+            evidence=_VERIFIED,
         )
 
     def test_stores_fields_verbatim(self) -> None:
@@ -54,6 +64,7 @@ class ExplanationTests(unittest.TestCase):
         self.assertEqual(exp.graph_relation_count, 3)
         self.assertEqual(exp.citation_count, 2)
         self.assertIs(exp.confidence, Confidence.HIGH)
+        self.assertIs(exp.evidence, _VERIFIED)
 
     def test_is_immutable(self) -> None:
         exp = self._make()
@@ -135,6 +146,130 @@ class RuleBasedConfidenceCalculatorTests(unittest.TestCase):
         base = dict(citation_count=2, graph_relation_count=1)
         self.assertIs(self._assess(**base, retrieved_count=2, reranked_count=2), Confidence.HIGH)
         self.assertIs(self._assess(**base, retrieved_count=99, reranked_count=99), Confidence.HIGH)
+
+
+class EvidenceVerificationTests(unittest.TestCase):
+    def test_is_immutable(self) -> None:
+        with self.assertRaises(FrozenInstanceError):
+            _VERIFIED.verified = False  # type: ignore[misc]
+
+    def test_stores_fields_verbatim(self) -> None:
+        self.assertTrue(_VERIFIED.verified)
+        self.assertEqual(_VERIFIED.verified_citations, 2)
+        self.assertEqual(_VERIFIED.total_citations, 2)
+
+
+class RuleBasedEvidenceVerifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.verifier = RuleBasedEvidenceVerifier()
+
+    def _verify(self, **overrides) -> EvidenceVerification:
+        facts = dict(
+            grounded=True,
+            retrieved_chunk_ids=frozenset({1, 2, 3}),
+            cited_chunks=[CitedChunk(1, "alpha text"), CitedChunk(2, "beta text")],
+        )
+        facts.update(overrides)
+        return self.verifier.verify(**facts)
+
+    def test_satisfies_protocol(self) -> None:
+        self.assertIsInstance(self.verifier, EvidenceVerifier)
+
+    # --- the rule cascade (exact truth table) ---
+
+    def test_not_grounded_is_unverified(self) -> None:
+        result = self._verify(grounded=False, cited_chunks=[])
+        self.assertFalse(result.verified)
+        self.assertEqual(result.reason, "answer is not grounded")
+        self.assertEqual(result.total_citations, 0)
+
+    def test_not_grounded_ignores_any_stray_citations(self) -> None:
+        # "not grounded" is checked first in the cascade regardless of citations.
+        result = self._verify(grounded=False)
+        self.assertFalse(result.verified)
+        self.assertEqual(result.reason, "answer is not grounded")
+
+    def test_grounded_zero_citations_is_unverified(self) -> None:
+        result = self._verify(grounded=True, cited_chunks=[])
+        self.assertFalse(result.verified)
+        self.assertEqual(result.reason, "no citations")
+        self.assertEqual(result.verified_citations, 0)
+        self.assertEqual(result.total_citations, 0)
+
+    def test_citation_referencing_non_retrieved_chunk_is_unverified(self) -> None:
+        result = self._verify(
+            retrieved_chunk_ids=frozenset({1, 2}),
+            cited_chunks=[CitedChunk(1, "alpha text"), CitedChunk(999, "ghost text")],
+        )
+        self.assertFalse(result.verified)
+        self.assertEqual(
+            result.reason, "citation references a chunk not present in retrieval"
+        )
+        self.assertEqual(result.verified_citations, 1)  # only the real one counts
+        self.assertEqual(result.total_citations, 2)
+
+    def test_empty_cited_chunk_text_is_unverified(self) -> None:
+        result = self._verify(
+            cited_chunks=[CitedChunk(1, "alpha text"), CitedChunk(2, "   ")]
+        )
+        self.assertFalse(result.verified)
+        self.assertEqual(result.reason, "a cited chunk has empty text")
+        self.assertEqual(result.verified_citations, 1)
+        self.assertEqual(result.total_citations, 2)
+
+    def test_all_citations_structurally_valid_is_verified(self) -> None:
+        result = self._verify()
+        self.assertTrue(result.verified)
+        self.assertEqual(result.reason, "all 2 cited chunk(s) are structurally valid")
+        self.assertEqual(result.verified_citations, 2)
+        self.assertEqual(result.total_citations, 2)
+
+    def test_single_valid_citation_is_verified(self) -> None:
+        result = self._verify(cited_chunks=[CitedChunk(1, "alpha text")])
+        self.assertTrue(result.verified)
+        self.assertEqual(result.verified_citations, 1)
+        self.assertEqual(result.total_citations, 1)
+
+    def test_non_retrieved_check_precedes_empty_text_check(self) -> None:
+        # Both problems present: the cascade reports the non-retrieved reason first.
+        result = self._verify(
+            retrieved_chunk_ids=frozenset({1}),
+            cited_chunks=[CitedChunk(999, ""), CitedChunk(1, "alpha text")],
+        )
+        self.assertFalse(result.verified)
+        self.assertEqual(
+            result.reason, "citation references a chunk not present in retrieval"
+        )
+
+    def test_is_deterministic(self) -> None:
+        facts = dict(
+            grounded=True,
+            retrieved_chunk_ids=frozenset({1, 2}),
+            cited_chunks=[CitedChunk(1, "a"), CitedChunk(2, "b")],
+        )
+        self.assertEqual(self.verifier.verify(**facts), self.verifier.verify(**facts))
+
+    def test_duplicate_cited_chunks_are_counted_individually_not_deduplicated(self) -> None:
+        # "No additional heuristics": the verifier trusts cited_chunks as given
+        # and does not deduplicate — that responsibility belongs upstream (see
+        # the corresponding AnswerService-level test for the real dedup point).
+        result = self._verify(
+            cited_chunks=[
+                CitedChunk(2, "beta text"),
+                CitedChunk(2, "beta text"),
+                CitedChunk(2, "beta text"),
+            ]
+        )
+        self.assertTrue(result.verified)
+        self.assertEqual(result.verified_citations, 3)
+        self.assertEqual(result.total_citations, 3)
+
+    def test_does_not_mutate_inputs(self) -> None:
+        cited = [CitedChunk(1, "alpha text"), CitedChunk(2, "beta text")]
+        retrieved = frozenset({1, 2, 3})
+        self._verify(retrieved_chunk_ids=retrieved, cited_chunks=cited)
+        self.assertEqual(cited, [CitedChunk(1, "alpha text"), CitedChunk(2, "beta text")])
+        self.assertEqual(retrieved, frozenset({1, 2, 3}))
 
 
 if __name__ == "__main__":
