@@ -171,6 +171,58 @@ class SQLiteStorageTests(unittest.TestCase):
     def test_empty_when_no_files(self) -> None:
         self.assertEqual(self.storage.get_in_progress_files(), [])
 
+    # --- list_files_by_status (T6.2, generic single-status query) ---
+
+    def test_returns_files_at_the_given_status(self) -> None:
+        pdf_id = self.storage.add_file(path="/a.pdf", file_hash="h1")
+        txt_id = self.storage.add_file(path="/a.txt", file_hash="h2")  # also pending
+        found = {r.id for r in self.storage.list_files_by_status(FileStatus.PENDING)}
+        self.assertEqual(found, {pdf_id, txt_id})
+
+    def test_is_generic_across_arbitrary_statuses(self) -> None:
+        # Not special-cased to PENDING — works for any status value.
+        for status in (
+            FileStatus.CHUNKING, FileStatus.EMBEDDING, FileStatus.READY, FileStatus.FAILED,
+        ):
+            with self.subTest(status=status):
+                file_id = self._file_at(status, path=f"/{status}.pdf")
+                self.assertEqual(
+                    [r.id for r in self.storage.list_files_by_status(status)], [file_id]
+                )
+
+    def test_excludes_other_statuses(self) -> None:
+        pending = self.storage.add_file(path="/pending.pdf", file_hash="p")
+        self._file_at(FileStatus.CHUNKING, path="/chunking.pdf")
+        self._file_at(FileStatus.READY, path="/ready.pdf")
+        self._file_at(FileStatus.FAILED, path="/failed.pdf")
+        found = {r.id for r in self.storage.list_files_by_status(FileStatus.PENDING)}
+        self.assertEqual(found, {pending})
+
+    def test_workspace_isolation_by_status(self) -> None:
+        connection = self.storage._require_connection()
+        connection.execute(
+            "INSERT INTO files (workspace_id, path, hash, status) VALUES (?, ?, ?, ?)",
+            ("other", "/other.pdf", "h-other", FileStatus.PENDING),
+        )
+        connection.commit()
+        self.storage.add_file(path="/mine.pdf", file_hash="h-mine")
+        default_ws = self.storage.list_files_by_status(FileStatus.PENDING)
+        other_ws = self.storage.list_files_by_status(FileStatus.PENDING, workspace_id="other")
+        self.assertEqual([r.path for r in default_ws], ["/mine.pdf"])
+        self.assertEqual([r.path for r in other_ws], ["/other.pdf"])
+
+    def test_deterministic_ordering_by_id_for_status(self) -> None:
+        first = self.storage.add_file(path="/1.pdf", file_hash="h1")
+        second = self.storage.add_file(path="/2.pdf", file_hash="h2")
+        third = self.storage.add_file(path="/3.pdf", file_hash="h3")
+        self.assertEqual(
+            [r.id for r in self.storage.list_files_by_status(FileStatus.PENDING)],
+            [first, second, third],
+        )
+
+    def test_empty_when_no_files_match_status(self) -> None:
+        self.assertEqual(self.storage.list_files_by_status(FileStatus.READY), [])
+
 
 if __name__ == "__main__":
     unittest.main()

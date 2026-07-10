@@ -10,7 +10,9 @@ the ingestion state machine — the ``chunks`` table (T2.4), and the
 data-access methods to read/write them. The Phase 1 graph is SQLite-backed
 (Kùzu was considered and deferred, Design Doc §A4/§9): entities/edges are plain
 SQLite tables here, so all graph SQL stays in this single owner.
-``get_in_progress_files`` (T6.1) is the read query crash recovery is built on.
+``get_in_progress_files`` (T6.1) is the read query crash recovery is built on;
+``list_files_by_status`` (T6.2) is a generic single-status query — callers
+(e.g. ``ingest.find_unqueued_pdfs``) decide what a given status means to them.
 """
 
 from __future__ import annotations
@@ -285,6 +287,25 @@ class SQLiteStorage:
             "created_at, updated_at FROM files "
             f"WHERE workspace_id = ? AND status IN ({placeholders}) ORDER BY id",
             (workspace_id, *_IN_PROGRESS_STATUSES),
+        ).fetchall()
+        return [_to_record(row) for row in rows]
+
+    def list_files_by_status(
+        self, status: FileStatus, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[FileRecord]:
+        """Return every file at exactly ``status``, ordered by id (T6.2).
+
+        A generic, single-status persistence query (T6.2) — storage.py has no
+        notion of *why* a caller wants a given status; deciding which status
+        matters for what (e.g. "a PDF a queue lost track of") is a caller-side
+        concern (see ``ingest.find_unqueued_pdfs``). Read-only.
+        """
+        connection = self._require_connection()
+        rows = connection.execute(
+            "SELECT id, workspace_id, path, hash, status, error, "
+            "created_at, updated_at FROM files "
+            "WHERE workspace_id = ? AND status = ? ORDER BY id",
+            (workspace_id, status),
         ).fetchall()
         return [_to_record(row) for row in rows]
 
