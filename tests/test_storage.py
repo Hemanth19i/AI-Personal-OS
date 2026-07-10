@@ -223,6 +223,55 @@ class SQLiteStorageTests(unittest.TestCase):
     def test_empty_when_no_files_match_status(self) -> None:
         self.assertEqual(self.storage.list_files_by_status(FileStatus.READY), [])
 
+    # --- backup_to (T6.3 export/import) ---
+
+    def test_backup_to_produces_an_independently_openable_copy(self) -> None:
+        file_id = self.storage.add_file(path="/a.pdf", file_hash="h1")
+        backup_path = Path(self._tmp.name) / "backup.db"
+        self.storage.backup_to(backup_path)
+
+        self.assertTrue(backup_path.exists())
+        copy = SQLiteStorage(backup_path)
+        copy.connect()
+        try:
+            record = copy.get_file(file_id)
+            self.assertIsNotNone(record)
+            self.assertEqual(record.path, "/a.pdf")
+            self.assertEqual(record.hash, "h1")
+        finally:
+            copy.close()
+
+    def test_backup_to_matches_source_row_for_row(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        self.storage.add_file(path="/b.pdf", file_hash="h2")
+        backup_path = Path(self._tmp.name) / "backup.db"
+        self.storage.backup_to(backup_path)
+
+        copy = SQLiteStorage(backup_path)
+        copy.connect()
+        try:
+            self.assertIsNotNone(copy.get_file_by_hash("h1"))
+            self.assertIsNotNone(copy.get_file_by_hash("h2"))
+        finally:
+            copy.close()
+
+    def test_backup_to_does_not_mutate_the_source(self) -> None:
+        self.storage.add_file(path="/a.pdf", file_hash="h1")
+        before = self.storage.get_file_by_hash("h1")
+        self.storage.backup_to(Path(self._tmp.name) / "backup.db")
+        after = self.storage.get_file_by_hash("h1")
+        self.assertEqual(before, after)
+
+    def test_backup_to_creates_parent_directory(self) -> None:
+        backup_path = Path(self._tmp.name) / "nested" / "dir" / "backup.db"
+        self.storage.backup_to(backup_path)
+        self.assertTrue(backup_path.exists())
+
+    def test_backup_to_before_connect_raises(self) -> None:
+        disconnected = SQLiteStorage(Path(self._tmp.name) / "other.db")
+        with self.assertRaises(RuntimeError):
+            disconnected.backup_to(Path(self._tmp.name) / "backup.db")
+
 
 if __name__ == "__main__":
     unittest.main()
