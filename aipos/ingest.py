@@ -11,8 +11,15 @@ Called for each file that has passed the write-completion guard.
 T6.1 adds crash recovery (PRD §7.1 "Failure philosophy"): ``resume_pending``
 sweeps files a previous run left mid-pipeline and resumes each from its last
 good state, and ``retry_file`` re-runs a failed file on request. Both reuse the
-same two stages ``_process_pdf`` is built from (split out for T6.1) so a file
-that already has persisted chunks is never re-parsed or re-chunked.
+two stages ``process_registered_file`` is built from (split out for T6.1) so a
+file that already has persisted chunks is never re-parsed or re-chunked.
+
+T6.2 routes the heavy pipeline through a background task queue
+(``aipos.task_queue``) instead of running it on the watcher's own thread. This
+module stays queue-agnostic — it exposes ``process_registered_file`` (made
+public for T6.2) for a worker job to call, and ``find_unqueued_pdfs`` so
+``main.py`` can re-submit a PDF that was registered but never reached a worker
+before a crash. Neither function imports or knows about the task queue itself.
 """
 
 from __future__ import annotations
@@ -73,10 +80,10 @@ def process_file(
         return  # duplicate content, already registered
     if path.suffix.lower() != ".pdf":
         return  # only PDFs are parsed in this ticket
-    _process_pdf(record.id, path, storage, embedder, vector_store, ocr, extractor)
+    process_registered_file(record.id, path, storage, embedder, vector_store, ocr, extractor)
 
 
-def _process_pdf(
+def process_registered_file(
     file_id: int,
     path: Path,
     storage: SQLiteStorage,
@@ -85,10 +92,15 @@ def _process_pdf(
     ocr: OcrEngine,
     extractor: EntityExtractor,
 ) -> None:
-    """Run a freshly registered PDF through the full pipeline (T2.1..T4.2).
+    """Run an already-registered PDF through the full pipeline (T2.1..T4.2).
 
     Composed of the two stages T6.1 split out below so crash recovery can reuse
-    the second stage on its own, without re-parsing or re-chunking.
+    the second stage on its own, without re-parsing or re-chunking. Public
+    (T6.2, renamed from the former private ``_process_pdf``) so the background
+    task queue's worker jobs can call it directly for a file ``register_file``
+    has already inserted — the queue itself (``aipos.task_queue``) knows
+    nothing about ingestion; ``main.py``'s wiring is what closes this call into
+    a submitted job. Behaviour is unchanged from before the rename.
     """
     if not _parse_and_chunk(file_id, path, storage, ocr):
         return
@@ -294,3 +306,25 @@ def _resume_file(
     if not _parse_and_chunk(record.id, path, storage, ocr):
         return
     _embed_extract(record.id, path, storage, embedder, vector_store, extractor)
+
+
+def find_unqueued_pdfs(storage: SQLiteStorage) -> list[FileRecord]:
+    """Return PENDING files that are PDFs — registered but never queued (T6.2).
+
+    Once ingestion is queued rather than run inline, a PDF can be registered
+    (``register_file`` runs synchronously on the watcher thread) and then lost
+    if the process crashes before a worker dequeues it for processing —
+    ``resume_pending`` (T6.1) alone never sees it, since PENDING is
+    deliberately excluded from its sweep. Built entirely from storage's
+    generic ``list_files_by_status`` — queue semantics (what "unqueued" means,
+    which statuses/suffixes matter) live here, in the ingestion domain, not in
+    the persistence layer. Read-only; ``main.py`` uses this at startup to
+    re-submit these files to the task queue before it starts watching for new
+    ones. Non-PDF files are correctly excluded — they are left PENDING forever
+    by design (T2.1), same as ``process_file``'s own suffix check.
+    """
+    return [
+        record
+        for record in storage.list_files_by_status(FileStatus.PENDING)
+        if Path(record.path).suffix.lower() == ".pdf"
+    ]

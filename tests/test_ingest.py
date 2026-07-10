@@ -6,7 +6,14 @@ from pathlib import Path
 
 from aipos.chunking import chunk_text
 from aipos.hashing import sha256_file
-from aipos.ingest import process_file, register_file, resume_pending, retry_file
+from aipos.ingest import (
+    find_unqueued_pdfs,
+    process_file,
+    process_registered_file,
+    register_file,
+    resume_pending,
+    retry_file,
+)
 from aipos.storage import FileStatus, SQLiteStorage
 from tests.embedder_fakes import DeterministicEmbedder, FailingEmbedder, RecordingEmbedder
 from tests.extractor_fakes import SAMPLE_RESULT, FailingExtractor, RecordingExtractor
@@ -573,6 +580,118 @@ class ResumeAndRetryTests(unittest.TestCase):
         self.assertEqual(edges_1, edges_2)  # no increased edge weight
         self.assertEqual(ready_record_1, ready_record_2)  # READY file unchanged
         self.assertIs(self.storage.get_file(crashed_id).status, FileStatus.READY)
+
+
+class ProcessRegisteredFileAndUnqueuedPdfsTests(unittest.TestCase):
+    """T6.2: process_registered_file (the renamed, now-public pipeline entry
+    point) and find_unqueued_pdfs (the queued-PDF crash-recovery gap)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.storage = SQLiteStorage(self.root / "aipos.db")
+        self.storage.connect()
+        self.embedder = DeterministicEmbedder()
+        self.vectors = RecordingVectorStore()
+        self.ocr = RecordingOcr()
+        self.extractor = RecordingExtractor()
+
+    def tearDown(self) -> None:
+        self.storage.close()
+        self._tmp.cleanup()
+
+    # --- process_registered_file: identical behaviour to the old _process_pdf ---
+
+    def test_process_registered_file_reaches_ready(self) -> None:
+        pdf = self.root / "doc.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        record = register_file(pdf, self.storage)
+        process_registered_file(
+            record.id, pdf, self.storage, self.embedder, self.vectors, self.ocr, self.extractor
+        )
+        self.assertIs(self.storage.get_file(record.id).status, FileStatus.READY)
+        self.assertTrue(self.storage.get_chunk_records(record.id))
+
+    def test_process_registered_file_produces_same_result_as_process_file(self) -> None:
+        # Two identical documents, one driven through process_file (register +
+        # process in one call) and one through register_file +
+        # process_registered_file separately — same chunk/vector/ready outcome.
+        via_process_file = self.root / "a.pdf"
+        via_process_file.write_bytes(make_text_pdf("Hello World"))
+        process_file(
+            via_process_file, self.storage, self.embedder, self.vectors, self.ocr, self.extractor
+        )
+        a_record = self.storage.get_file_by_hash(sha256_file(via_process_file))
+
+        via_registered = self.root / "b.pdf"
+        via_registered.write_bytes(make_text_pdf("Hello World, again"))
+        b_record = register_file(via_registered, self.storage)
+        process_registered_file(
+            b_record.id, via_registered, self.storage, self.embedder, self.vectors,
+            self.ocr, self.extractor,
+        )
+
+        self.assertIs(a_record.status, FileStatus.READY)
+        self.assertIs(self.storage.get_file(b_record.id).status, FileStatus.READY)
+        self.assertEqual(
+            len(self.storage.get_chunk_records(a_record.id)),
+            len(self.storage.get_chunk_records(b_record.id)),
+        )
+
+    def test_process_registered_file_marks_failed_on_error(self) -> None:
+        pdf = self.root / "bad.pdf"
+        pdf.write_bytes(b"this is not a pdf at all")
+        record = register_file(pdf, self.storage)
+        process_registered_file(
+            record.id, pdf, self.storage, self.embedder, self.vectors, self.ocr, self.extractor
+        )
+        result = self.storage.get_file(record.id)
+        self.assertIs(result.status, FileStatus.FAILED)
+        self.assertTrue(result.error)
+
+    # --- find_unqueued_pdfs ---
+
+    def test_finds_pending_pdf(self) -> None:
+        pdf = self.root / "a.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        record = register_file(pdf, self.storage)
+        found = {r.id for r in find_unqueued_pdfs(self.storage)}
+        self.assertEqual(found, {record.id})
+
+    def test_excludes_pending_non_pdf(self) -> None:
+        txt = self.root / "note.txt"
+        txt.write_text("just a note", encoding="utf-8")
+        register_file(txt, self.storage)
+        self.assertEqual(find_unqueued_pdfs(self.storage), [])
+
+    def test_excludes_pdfs_past_pending(self) -> None:
+        pdf = self.root / "a.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        record = register_file(pdf, self.storage)
+        process_registered_file(
+            record.id, pdf, self.storage, self.embedder, self.vectors, self.ocr, self.extractor
+        )
+        self.assertEqual(find_unqueued_pdfs(self.storage), [])
+
+    def test_excludes_in_progress_pdf(self) -> None:
+        pdf = self.root / "a.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        record = register_file(pdf, self.storage)
+        self.storage.update_status(record.id, FileStatus.CHUNKING)
+        self.assertEqual(find_unqueued_pdfs(self.storage), [])
+
+    def test_empty_when_no_files(self) -> None:
+        self.assertEqual(find_unqueued_pdfs(self.storage), [])
+
+    def test_mixed_pending_files_returns_only_pdfs(self) -> None:
+        pdf = self.root / "a.pdf"
+        pdf.write_bytes(make_text_pdf("Hello World"))
+        pdf_record = register_file(pdf, self.storage)
+        txt = self.root / "b.txt"
+        txt.write_text("note", encoding="utf-8")
+        register_file(txt, self.storage)
+        found = {r.id for r in find_unqueued_pdfs(self.storage)}
+        self.assertEqual(found, {pdf_record.id})
 
 
 if __name__ == "__main__":
