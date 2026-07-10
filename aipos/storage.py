@@ -10,6 +10,7 @@ the ingestion state machine — the ``chunks`` table (T2.4), and the
 data-access methods to read/write them. The Phase 1 graph is SQLite-backed
 (Kùzu was considered and deferred, Design Doc §A4/§9): entities/edges are plain
 SQLite tables here, so all graph SQL stays in this single owner.
+``get_in_progress_files`` (T6.1) is the read query crash recovery is built on.
 """
 
 from __future__ import annotations
@@ -53,6 +54,20 @@ class FileStatus(StrEnum):
     VERIFYING = "verifying"
     READY = "ready"
     FAILED = "failed"
+
+
+# Statuses a file can only be in after processing has started but before it has
+# finished (T6.1 crash recovery, PRD §7.1) — excludes PENDING (not started; also
+# the forever-pending state for unsupported non-PDF files, T2.1) and the
+# terminal READY/FAILED.
+_IN_PROGRESS_STATUSES = (
+    FileStatus.PARSING,
+    FileStatus.OCR,
+    FileStatus.CHUNKING,
+    FileStatus.EMBEDDING,
+    FileStatus.EXTRACTING,
+    FileStatus.VERIFYING,
+)
 
 
 _SCHEMA = """
@@ -249,6 +264,29 @@ class SQLiteStorage:
             (file_hash,),
         ).fetchone()
         return _to_record(row) if row is not None else None
+
+    def get_in_progress_files(
+        self, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[FileRecord]:
+        """Return files whose lifecycle was started but not finished (T6.1).
+
+        "In progress" is exactly the set of statuses a file can only reach after
+        ``process_file`` has actually begun working on it: parsing, ocr,
+        chunking, embedding, extracting, verifying. ``pending`` is deliberately
+        excluded — non-PDF files are left ``pending`` forever by design (T2.1),
+        not because of a crash, so sweeping them would misclassify unsupported
+        files as failures. ``ready``/``failed`` are terminal and excluded too.
+        Ordered by id for deterministic sweep order. Read-only.
+        """
+        connection = self._require_connection()
+        placeholders = ",".join("?" for _ in _IN_PROGRESS_STATUSES)
+        rows = connection.execute(
+            "SELECT id, workspace_id, path, hash, status, error, "
+            "created_at, updated_at FROM files "
+            f"WHERE workspace_id = ? AND status IN ({placeholders}) ORDER BY id",
+            (workspace_id, *_IN_PROGRESS_STATUSES),
+        ).fetchall()
+        return [_to_record(row) for row in rows]
 
     def update_status(
         self, file_id: int, status: FileStatus, *, error: str | None = None

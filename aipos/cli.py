@@ -2,13 +2,17 @@
 
 Home for user-facing commands that operate on an already-built index, keeping
 ``main.py`` focused purely on watcher startup. Today it exposes ``ask`` (the
-T3.3 answer command); ``watch``/``index``/``status``/``doctor``/``benchmark``
-land here in later milestones.
+T3.3 answer command) and ``retry`` (the T6.1 crash-recovery command);
+``watch``/``index``/``status``/``doctor``/``benchmark`` land here in later
+milestones.
 
 ``ask`` wires the read path — embedder, vector store, storage, retriever,
 reranker, and LLM — into an ``AnswerService`` and prints the grounded answer
-with its sources. The wiring is separated from the rendering so tests can drive
-the command with a fake ``AnswerService`` (no Ollama, no LanceDB).
+with its sources. ``retry`` wires the ingest dependencies and calls
+``aipos.ingest.retry_file`` for a failed file, printing its resulting status —
+the CLI stands in for the ``Retry`` button the not-yet-built Library UI
+pillar will eventually own (Design Doc §B4). Both commands separate wiring
+from rendering so tests can drive them with fakes (no Ollama, no LanceDB).
 """
 
 from __future__ import annotations
@@ -19,18 +23,24 @@ from pathlib import Path
 
 from aipos.answering import AnswerResult, AnswerService
 from aipos.config import load_config
+from aipos.embedding import Embedder, OllamaEmbedder
 from aipos.explainability import Explanation
-from aipos.embedding import OllamaEmbedder
+from aipos.extraction import EntityExtractor, LLMEntityExtractor
 from aipos.graph_retrieval import GraphExpander, GraphRetriever, RoutedRetriever
+from aipos.ingest import retry_file
 from aipos.intent import HeuristicIntentRouter
 from aipos.llm import OllamaLLM
+from aipos.ocr import OcrEngine, TesseractOcr
 from aipos.paths import database_path, ensure_app_directories, vector_store_path
 from aipos.reranking import LexicalReranker
 from aipos.retrieval import SemanticRetriever
-from aipos.storage import SQLiteStorage
-from aipos.vector_store import LanceVectorStore
+from aipos.storage import FileRecord, SQLiteStorage
+from aipos.vector_store import LanceVectorStore, VectorStore
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# The ingest dependencies retry_file needs, in the order it takes them.
+IngestDependencies = tuple[SQLiteStorage, Embedder, VectorStore, OcrEngine, EntityExtractor]
 
 
 def render_answer(result: AnswerResult) -> str:
@@ -91,6 +101,29 @@ def run_ask(question: str, service: AnswerService, *, explain: bool = False) -> 
     return output
 
 
+def render_retry_result(file_id: int, record: FileRecord | None) -> str:
+    """Format the outcome of a retry attempt for the terminal (T6.1)."""
+    if record is None:
+        return f"No file with id={file_id}."
+    lines = [f"File id={file_id}: {record.status.value}"]
+    if record.error:
+        lines.append(f"Error: {record.error}")
+    return "\n".join(lines)
+
+
+def run_retry(
+    file_id: int,
+    storage: SQLiteStorage,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    ocr: OcrEngine,
+    extractor: EntityExtractor,
+) -> str:
+    """Retry a failed file and render its resulting status (T6.1)."""
+    retry_file(file_id, storage, embedder, vector_store, ocr, extractor)
+    return render_retry_result(file_id, storage.get_file(file_id))
+
+
 def _build_answer_service() -> AnswerService:
     """Wire the real read-path dependencies from config."""
     config = load_config(PROJECT_ROOT)
@@ -113,8 +146,30 @@ def _build_answer_service() -> AnswerService:
     return AnswerService(retriever, reranker, llm, storage)
 
 
-def main(argv: list[str] | None = None, *, service: AnswerService | None = None) -> int:
-    """CLI entry point. Inject ``service`` to bypass real-backend wiring (tests)."""
+def _build_ingest_dependencies() -> IngestDependencies:
+    """Wire the real ingestion dependencies from config (for ``retry``)."""
+    config = load_config(PROJECT_ROOT)
+    ensure_app_directories(config)
+
+    storage = SQLiteStorage(database_path(config))
+    storage.connect()
+
+    vector_store = LanceVectorStore(vector_store_path(config))
+    vector_store.connect()
+
+    embedder = OllamaEmbedder(config.embedding_model)
+    ocr = TesseractOcr()
+    extractor = LLMEntityExtractor(OllamaLLM(config.llm_model))
+    return storage, embedder, vector_store, ocr, extractor
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    service: AnswerService | None = None,
+    ingest_deps: IngestDependencies | None = None,
+) -> int:
+    """CLI entry point. Inject ``service``/``ingest_deps`` to bypass real-backend wiring (tests)."""
     # Force UTF-8 output: on Windows, stdout defaults to a legacy code page
     # (e.g. cp1252) which mangles the em dash / ellipsis in rendered answers.
     if hasattr(sys.stdout, "reconfigure"):
@@ -129,11 +184,24 @@ def main(argv: list[str] | None = None, *, service: AnswerService | None = None)
         action="store_true",
         help="Also show the reasoning trace behind the answer",
     )
+    retry_parser = subparsers.add_parser("retry", help="Retry a failed file")
+    retry_parser.add_argument(
+        "file_id", type=int, help="The id of the failed file to retry"
+    )
     args = parser.parse_args(argv)
 
     if args.command == "ask":
         answer_service = service if service is not None else _build_answer_service()
         print(run_ask(args.question, answer_service, explain=args.explain), flush=True)
+        return 0
+    if args.command == "retry":
+        storage, embedder, vector_store, ocr, extractor = (
+            ingest_deps if ingest_deps is not None else _build_ingest_dependencies()
+        )
+        print(
+            run_retry(args.file_id, storage, embedder, vector_store, ocr, extractor),
+            flush=True,
+        )
         return 0
     return 1  # unreachable: argparse enforces a known command
 
