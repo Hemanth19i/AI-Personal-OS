@@ -26,7 +26,12 @@ CONFIG_FILENAME = "config.toml"
 _DEFAULT_DATA_DIR = "data"
 _DEFAULT_WATCHED_FOLDER = "data/watched"
 _DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
-_DEFAULT_LLM_MODEL = "llama3.1"
+# Default generation model changed from llama3.1 (8B) to qwen2.5:3b after the
+# M7.1 model evaluation (see benchmarks/results/winner.md): qwen2.5:3b fits
+# entirely in 6 GB VRAM (100% GPU vs llama3.1's 25%/75% CPU/GPU split), meets
+# the <2s query target (0.99s vs 3.67s), preserves grounding + citations, and
+# is ~5x faster per chunk — while staying 3/3 correct on the benchmark.
+_DEFAULT_LLM_MODEL = "qwen2.5:3b"
 
 
 @dataclass(frozen=True)
@@ -86,8 +91,10 @@ data_dir = "data"
 # Folder watched for documents to ingest (PDF, TXT, Markdown).
 watched_folder = "data/watched"
 
-# Local model names (consumed later: embeddings at T2.3, the LLM at T3.3).
+# Local model names. Defaults chosen by the M7.1 model evaluation
+# (see benchmarks/results/winner.md). qwen2.5:3b fits 6 GB VRAM, meets the
+# <2s query target, and preserves grounding/citations.
 [models]
 embedding = "nomic-embed-text"
-llm = "llama3.1"
+llm = "qwen2.5:3b"
 """
