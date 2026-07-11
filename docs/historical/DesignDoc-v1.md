@@ -1,3 +1,22 @@
+# ⚠ Historical Document
+
+This document reflects the original Phase 1 planning process. It is preserved unchanged for
+historical reference. **Do not use it for new implementation work.**
+
+The current project documentation is:
+
+- [`docs/ROADMAP.md`](../ROADMAP.md) — what we're building
+- [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) — how we're building it
+- [`docs/IDEAS.md`](../IDEAS.md) — deferred / future work
+
+> **Doc-specific note:** Part A (engineering design) is largely accurate for what's built, except
+> §A7 (`AnswerResult`/`graph_path` — the shipped shape differs) and §A8 (event taxonomy — none of it
+> is live; no event bus exists). **Part B (UI/UX Design) describes a UI that was never built** —
+> Tauri+React, the five pillars, and the event bus that would drive live updates are all deferred
+> scope (see `IDEAS.md`).
+
+---
+
 # Design Document — AI Personal OS
 
 **Companion to:** PRD v1.3 and the ADR. The PRD says *what* and *why*; this doc says *how*, at the

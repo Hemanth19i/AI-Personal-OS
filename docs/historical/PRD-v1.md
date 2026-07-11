@@ -1,3 +1,21 @@
+# ⚠ Historical Document
+
+This document reflects the original Phase 1 planning process. It is preserved unchanged for
+historical reference. **Do not use it for new implementation work.**
+
+The current project documentation is:
+
+- [`docs/ROADMAP.md`](../ROADMAP.md) — what we're building
+- [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) — how we're building it
+- [`docs/IDEAS.md`](../IDEAS.md) — deferred / future work
+
+> **Doc-specific note:** sections describing what's actually been built (ingestion, retrieval,
+> GraphRAG, explainability, robustness) remain accurate; sections describing the AI Workspace UI
+> (§6.12), System Health view (§6.13), typed Memory (§6.6), and security hardening (§6.18) describe
+> intended-but-not-yet-built scope — see `ROADMAP.md` and `IDEAS.md` for what's actually true today.
+
+---
+
 # Product Requirements Document — AI Personal OS
 
 **Working title:** AI Personal OS — An offline-first intelligence platform for your personal knowledge.

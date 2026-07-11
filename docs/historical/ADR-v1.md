@@ -1,3 +1,23 @@
+# ⚠ Historical Location — but still authoritative
+
+This file was **relocated** here on 2026-07-11 as part of the docs reorganization (Build Plan frozen
+→ [`docs/ROADMAP.md`](../ROADMAP.md) canonical). Unlike the other documents in `docs/historical/`,
+these decisions are **not retired** — every ADR below (001–016) is still in effect and still governs
+new work. This file remains the authoritative record of *why* each decision was made.
+
+The current project documentation is:
+
+- [`docs/ROADMAP.md`](../ROADMAP.md) — what we're building
+- [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) — how we're building it (restates the currently-binding
+  *rules* derived from these ADRs, in one short page)
+- [`docs/IDEAS.md`](../IDEAS.md) — deferred / future work
+
+> **Immutability still applies:** per this document's own convention, records are never edited in
+> place — a changed decision gets a new ADR-017+, never an edit to one below. Breaking an
+> architectural boundary in `ARCHITECTURE.md` is exactly what a new ADR is for.
+
+---
+
 # Architecture Decision Records — AI Personal OS
 
 This document captures the significant architectural decisions for AI Personal OS, the reasoning

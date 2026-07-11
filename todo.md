@@ -1,21 +1,14 @@
 # AI Personal OS — TODO
 
-Phase 1 task tracker. Check things off as you go. Each task is small enough to finish in one sitting
-and ends in something you can run. Build top-to-bottom; don't skip ahead.
+Phase 1 task tracker. Check things off as you go.
 
-**Reference docs:** PRD v1.3 (Tech Stack is PRD §9 — no separate file) · ADR · Design Doc · Build Plan
-**MVP done =** drop a doc → indexed locally → ask questions → cited answers → see *why*, fully offline.
-
----
-
-## 🎯 Tonight (the only thing that matters right now)
-
-- [x] **T1.1** Create `files` table in SQLite (`id, workspace_id, path, hash, status, error, created_at, updated_at`; `workspace_id` hardcoded to `"default"`)
-- [x] **T1.2** Watch a folder with `watchdog`; print the path of any new file
-- [x] **T1.3** Wait for write-completion (size-stability) before processing
-- [x] **T1.4** Hash (SHA-256) + insert a `pending` row; skip if hash already seen
-
-> ✅ Win condition: drop a PDF → one row appears → drop it again → nothing happens. **Met.**
+**Canonical plan:** [`docs/ROADMAP.md`](docs/ROADMAP.md) — read that first for the *why*
+behind anything below. This file is just the checklist view of it.
+**Reference docs:** [`docs/historical/`](docs/historical/) (frozen v1 PRD/ADR/Design
+Doc/Build Plan) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (binding rules) ·
+[`docs/IDEAS.md`](docs/IDEAS.md) (deferred scope)
+**MVP done =** drop a doc → indexed locally → ask questions → cited answers → see *why*, fully
+offline. **Met as of Milestone 6.3, via the CLI.**
 
 ---
 
@@ -34,51 +27,50 @@ and ends in something you can run. Build top-to-bottom; don't skip ahead.
 
 ## Milestone 2 — Process into searchable chunks
 
-> Repo commits split this milestone finer than the Build Plan (T2.1 = a typed
-> file-lifecycle refactor; parsing/chunking/embedding/vectors ran as T2.2–T2.6;
-> OCR fallback shipped as T2.7). The Build-Plan tickets below map onto that work.
-
 - [x] **T2.1** Text extraction: PDF / TXT / Markdown (`pending → parsing → parsed`)
 - [x] **T2.2** Chunking with page/offset metadata → `chunks` table (`→ chunked`)
 - [x] **T2.3** Local embeddings (nomic-embed) for each chunk, via a lightweight Model Manager
 - [x] **T2.4** Write vectors to LanceDB keyed by `chunk_id`, behind a minimal Index Manager (index/reindex only) (`→ ready`)
 - [x] **T2.5** OCR fallback (Tesseract) for scanned PDFs with no text layer *(repo T2.7)*
 
-> ✅ Win: drop a PDF/TXT/Markdown file — including a scanned PDF — and it reaches `ready` with vectors stored. **Met.**
-
 ## Milestone 3 — Ask a question (vector RAG)
 
-- [ ] **T3.1** Semantic retrieval: embed query → top-K chunks → print with source+page
-- [ ] **T3.2** Cross-encoder reranker on the top-K chunks before context building
-- [ ] **T3.3** Answer with citations via Ollama (answer from context only, cite chunks)
-
-> ✅ Win: a working offline RAG second brain via CLI. This alone is demoable.
+- [x] **T3.1** Semantic retrieval: embed query → top-K chunks → print with source+page
+- [x] **T3.2** Reranker on the top-K chunks before context building *(shipped as `LexicalReranker`,
+      not a cross-encoder — deliberate, see Roadmap v2 §2; `Reranker` protocol allows swap-in later)*
+- [x] **T3.3** Answer with citations via Ollama (answer from context only, cite chunks)
 
 ## Milestone 4 — Knowledge graph (the differentiator)
 
-- [ ] **T4.1** Entity + relationship extraction per doc (people, concepts, relates-to)
-- [ ] **T4.2** Persist entities/edges in Kùzu (or SQLite-backed graph)
-- [ ] **T4.3** Graph-aware retrieval (pull graph neighbors into context)
-- [ ] **T4.4** Heuristic intent router (simple vs. graph; default to richer path when unsure)
+- [x] **T4.1** Entity + relationship extraction per doc (people, concepts, relates-to)
+- [x] **T4.2** Persist entities/edges *(shipped SQLite-backed, not Kùzu — deliberate, see Roadmap v2 §2)*
+- [x] **T4.3** Graph-aware retrieval (pull graph neighbors into context)
+- [x] **T4.4** Heuristic intent router *(Semantic/Graph only — Keyword/Simple/Hybrid deferred, see `docs/IDEAS.md`)*
 
-> ✅ Win: relationship questions work; routing is visible in logs.
+## Milestone 5 — split into two (see Roadmap v2 §2 for why)
 
-## Milestone 5 — Explainability + UI
+### M5-Explainability — ✅ done
 
-- [ ] **T5.1** Structured `AnswerResult` (answer, sources, reasoning_path, confidence, graph_path)
-- [ ] **T5.2** Tauri + React shell with a single Chat view calling the Core API
-- [ ] **T5.3** UI pillars in order: Chat → Library → Search → (Graph Explorer) → (Timeline)
-- [ ] **T5.4** Introduce event bus; Library updates live on `file.ready` (toast)
+- [x] **T5.1** Structured `Explanation` (strategy, retrieval/graph/rerank counts, grounding, confidence, evidence)
+- [x] CLI exposes it via `ask --explain`
 
-> ✅ Win: drop a file, watch it go ready live, ask in a window, see why.
+### M5-UI — ⊘ not started, not scheduled (tracked in `docs/IDEAS.md`, not here)
+
+- [ ] Tauri + React shell with a single Chat view calling the Core API
+- [ ] UI pillars in order: Chat → Library → Search → (Graph Explorer) → (Timeline)
+- [ ] Event bus; Library updates live on `file.ready` (toast)
 
 ## Milestone 6 — Robustness
 
-- [ ] **T6.1** State-machine recovery: resume after crash; failed files retryable; one bad file never stalls
-- [ ] **T6.2** Task queue so embedding/OCR/reasoning don't block each other
-- [ ] **T6.3** Backup / restore / workspace export
-- [ ] **T6.4** System Health view (RAM, LLM status, queue depth, storage)
-- [ ] **T6.5** Offline validation: full flow with the network physically off
+- [x] **T6.1** State-machine recovery: resume after crash; failed files retryable; one bad file never stalls
+- [x] **T6.2** Task queue so embedding/OCR/reasoning don't block each other
+- [x] **T6.3** Backup / restore / workspace export
+- [ ] **T6.5** Offline validation: full flow with the network physically off *(next — no dependency on M5-UI)*
+- [ ] **T6.4** System Health view *(⊘ BLOCKED on M5-UI + Event Bus — see Roadmap v2 §2)*
+
+> **Architecture Freeze v1.0** takes effect once M6 closes (T6.5 done) — see
+> [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). From then on, new work extends the
+> existing architecture rather than redesigning it.
 
 ## Milestone 7 — Ship
 
@@ -86,7 +78,7 @@ and ends in something you can run. Build top-to-bottom; don't skip ahead.
 - [ ] **T7.2** README + link the phase docs; GIF of drop → query → explanation
 - [ ] **T7.3** Demo video (offline end-to-end), add to repo
 
-> ✅ **PHASE 1 DONE** when the MVP done-definition is met, fully offline.
+> Scoped to the CLI surface unless M5-UI is deliberately reopened.
 
 ---
 
@@ -95,12 +87,14 @@ and ends in something you can run. Build top-to-bottom; don't skip ahead.
 - [ ] One task at a time; each ends in something runnable. If it doesn't, split it.
 - [ ] Persist the next `status` **before** doing the work (crash-safe).
 - [ ] UI never touches storage directly — always via Core API.
-- [ ] Models only through the Model Manager.
+- [ ] Models only through the Model Manager (shipped as `embedding.py`/`llm.py` — see `docs/IDEAS.md`
+      on why no unified class was built).
 - [ ] Index Manager: Index/Re-index only in Phase 1 — no optimize/repair/migrate yet.
-- [ ] Event bus = notifications only; queries are direct calls.
-- [ ] Event bus doesn't exist until M5 — M1–M4 use direct writes (ADR-016).
+- [ ] Event bus doesn't exist yet — see M5-UI above. Direct writes/calls everywhere until it does.
 - [ ] Never mutate original files in place.
 - [ ] Don't pre-build Core Services before something needs them.
+- [ ] Small, contained fixes (e.g. a missing field on a citation) are bugfixes — don't give them
+      milestone numbers. Reserve entries in this file for real scope.
 
 ---
 
@@ -112,8 +106,9 @@ and ends in something you can run. Build top-to-bottom; don't skip ahead.
 - [ ] Mobile app + bidirectional sync
 - [ ] Audio/voice-memo transcription (Whisper) — additional `SourceAdapter` implementation
 - [ ] Remote data-source plugins (GitHub, Email, Drive, OneDrive, Photos) + Plugin SDK
-- [ ] Full security hardening (biometric lock, etc.)
+- [ ] Full security hardening (biometric lock, etc.) — see `docs/IDEAS.md`
 
 ---
 
-*Keep this file in the repo root. Update it as you build.*
+*Keep this file in the repo root. Update it as you build. For the narrative behind any line above,
+read `docs/ROADMAP.md` first.*
