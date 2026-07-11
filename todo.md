@@ -75,11 +75,18 @@ offline. **Met as of Milestone 6.3, via the CLI.**
 
 ## Milestone 7 — Ship
 
-- [ ] **T7.1** Performance pass vs targets (100p PDF <10s, query <2s, cold start <5s, <2GB RAM)
-- [ ] **T7.2** README + link the phase docs; GIF of drop → query → explanation
+- [x] **T7.1** Model Evaluation & Performance Benchmark — profiled the real stack, found LLM
+      inference is the only bottleneck, benchmarked 4 models, set default → `qwen2.5:3b`
+      (query <2s met; cold start ~1.5s; app RAM ~128MB). Committed harness under `benchmarks/`;
+      tagged `perf-baseline-v1.0`. See `benchmarks/results/winner.md`.
+- [ ] **T7.2** Documentation & release readiness — README install (Ollama + model pulls), status,
+      CLI reference, benchmark link, known limitations; MIT `LICENSE`; keep ROADMAP/todo current
+      *(Phase A; architecture diagram / GIF / CONTRIBUTING / CHANGELOG are Phase B)*
 - [ ] **T7.3** Demo video (offline end-to-end), add to repo
 
 > Scoped to the CLI surface unless M5-UI is deliberately reopened.
+> Note: the 100-page-PDF <10s indexing target is not met by the model change alone (extraction is
+> one LLM call per chunk) — see `docs/ROADMAP.md` §4 / `benchmarks/results/winner.md`.
 
 ---
 

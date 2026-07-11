@@ -102,6 +102,8 @@ is revisited, not by default.
 
 ## 3. Current position
 
+_Updated 2026-07-11: M6.5 and M7.1 shipped; Architecture Freeze v1.0 now in effect._
+
 ```
 ✓ M0    Project skeleton
 ✓ M1    Ingest one file into SQLite
@@ -113,31 +115,37 @@ is revisited, not by default.
 ✓ M6.1  Crash-safe resume and retry
 ✓ M6.2  Background task queue
 ✓ M6.3  Manual workspace export/import
-──────────────────────────────────────────────────────────  ← current position
-  M6.5  Offline validation test          — next, no dependency on M5-UI
+✓ M6.5  Offline validation test          (tag milestone-6.5)
 ⊘ M6.4  System Health view              — BLOCKED on M5-UI + Event Bus
 ──────────────────────────────────────────────────────────
-  Architecture Freeze v1.0 — see ARCHITECTURE.md, effective once M6 closes
+  Architecture Freeze v1.0 — IN EFFECT (M6 closed) — see ARCHITECTURE.md
 ──────────────────────────────────────────────────────────
-  M7     Ship (performance pass, docs, demo) — scoped to the CLI surface unless M5-UI reopens
+✓ M7.1  Model evaluation & performance benchmark  (tag perf-baseline-v1.0; default → qwen2.5:3b)
+──────────────────────────────────────────────────────────  ← current position
+  M7.2  Documentation & release readiness  — in progress
+  M7.3  Demo video (offline end-to-end)
+        (M7 scoped to the CLI surface unless M5-UI reopens)
 ```
 
 **Phase 1's own MVP done-definition** — *"a user can drop a document, have it indexed locally, ask
-questions, receive cited answers, and understand why those answers were produced"* — **is already met
-today**, via the CLI. The UI was always the *how*, not a precondition of *whether* Phase 1 is done.
-M6.5 is the last item needed to close M6's own scope; M5-UI/M6.4/full M7 polish are a distinct,
-optional second track (§5).
+questions, receive cited answers, and understand why those answers were produced"* — **is met today**,
+via the CLI. The UI was always the *how*, not a precondition of *whether* Phase 1 is done. M6 is now
+closed; M5-UI/M6.4 remain a distinct, optional second track (§5). What's left of Phase 1 is
+release polish: M7.2 (docs) and M7.3 (demo video).
 
 ## 4. Remaining mandatory work
 
-- **M6.5 — Offline validation test.** Prove the full pipeline has zero dependency on internet
-  connectivity (`PRD-v1.md` §7.2), via an automated socket-guard regression test plus a documented
-  manual "network physically off" check. No architectural dependency — buildable immediately.
+- **M7.2 — Documentation & release readiness.** README install/quick-start (Ollama + model pulls),
+  current status, CLI reference, benchmark link, known limitations; `LICENSE`; this roadmap and
+  `todo.md` kept current. Documentation only — no code, no architecture change.
+- **M7.3 — Demo video.** Offline end-to-end walkthrough, added to the repo.
 
-Everything else either has a hard dependency (M5-UI → M6.4) or is optional (§5). Small, contained
-fixes found during reconciliation (e.g., citation `page` field not surfacing in `Source`, `graph_path`
-being a count rather than a traversed-edge list) are bugfixes, not roadmap items — track and fix them
-directly, don't give them milestone numbers.
+M6.5 (offline validation) and M7.1 (model evaluation → `qwen2.5:3b` default) are **done** — see
+`../benchmarks/results/winner.md` for the model decision. Everything else either has a hard
+dependency (M5-UI → M6.4) or is optional (§5). Small, contained fixes (citation `page` field not
+surfacing in `Source`; `graph_path` being a count rather than a traversed-edge list; the
+`llama3.2:3b` `USED_CHUNKS` footer-format incompatibility surfaced in M7.1) are bugfixes, not
+roadmap items — track and fix them directly, don't give them milestone numbers.
 
 ## 5. Optional / future work
 
