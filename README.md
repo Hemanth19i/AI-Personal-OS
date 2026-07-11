@@ -13,28 +13,34 @@ those answers were produced.
 
 ## Status
 
-Phase 1 — **Milestone 2 complete** (T0.1–T2.7). The full ingestion lifecycle
-runs end to end: a watched folder holds each new file until its write completes,
-then hashes (SHA-256) and registers it in SQLite (skipping already-seen
-content). A registered PDF is parsed — falling back to Tesseract OCR when it has
-no text layer (a scanned document) — chunked, embedded via a local Ollama model,
-and its vectors written to LanceDB keyed by chunk id, reaching `ready`. Next up
-is Milestone 3 (ask a question, get a cited answer). See the Build Plan for the
-ticket list.
+Phase 1's MVP done-definition is **met**, end to end, via the CLI: drop a PDF/TXT/Markdown file
+(including scanned PDFs via OCR) into the watched folder → it's hashed, parsed, chunked, embedded,
+vector-indexed, and entity/relationship-extracted into a local knowledge graph, reaching `ready` —
+then `python -m aipos.cli ask "..."` answers questions grounded in that corpus, with citations, a
+GraphRAG-aware retrieval path, and a full explainability trace (`--explain`). Crash recovery, a
+background task queue, and manual workspace export/import are all in place (Milestones 0–4, 5's
+explainability half, and 6.1–6.3).
+
+**Not yet built:** the desktop UI (Tauri+React), the event bus, and the System Health view — these
+were deliberately deferred, not forgotten. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the
+current state and why, and [`docs/IDEAS.md`](docs/IDEAS.md) for what's deferred.
 
 OCR requires the Tesseract binary installed on the system (Windows:
 `winget install --id UB-Mannheim.TesseractOCR`; Debian/Ubuntu:
 `apt install tesseract-ocr`); the Python packages come from `requirements.txt`.
 
-## Contract documents
+## Documentation
 
-These are the single source of truth for the architecture and scope:
+| Document | Purpose |
+|---|---|
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Current implementation roadmap — what's built, what's next, and why the plan diverged from the original |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Current architectural rules (the boundaries binding on new code) |
+| [`docs/IDEAS.md`](docs/IDEAS.md) | Deferred ideas and future work — possibilities, not commitments |
+| [`todo.md`](todo.md) | Living task tracker |
+| [`docs/historical/`](docs/historical/) | Original Phase 1 planning documents (PRD, ADR, Design Doc, Build Plan) — frozen, for history only |
 
-- [Product Requirements](AI_Personal_OS_PRD.md)
-- [Architecture Decision Records](AI_Personal_OS_ADR.md)
-- [Design Document](AI_Personal_OS_Design_Doc.md)
-- [Phase 1 Build Plan](AI_Personal_OS_Phase1_Build_Plan.md)
-- [TODO](todo.md)
+Start with [`docs/ROADMAP.md`](docs/ROADMAP.md); it links out to everything else and explains the
+current state in full.
 
 ## Getting started
 

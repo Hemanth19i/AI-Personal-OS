@@ -1,3 +1,21 @@
+# ⚠ Historical Document
+
+This document reflects the original Phase 1 planning process. It is preserved unchanged for
+historical reference. **Do not use it for new implementation work.**
+
+The current project documentation is:
+
+- [`docs/ROADMAP.md`](../ROADMAP.md) — what we're building
+- [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) — how we're building it
+- [`docs/IDEAS.md`](../IDEAS.md) — deferred / future work
+
+> **Doc-specific note:** this is the *original* Phase 1 sequencing (M0–M7) as planned before
+> implementation began. Milestone 5 in particular was never completed as written here — see
+> `ROADMAP.md` for what actually happened (M5 was split into an explainability half that shipped and
+> a UI half that was deferred).
+
+---
+
 # Phase 1 Build Plan — AI Personal OS
 
 An ordered ticket list to take Phase 1 from nothing to the MVP done-definition:
