@@ -1,6 +1,10 @@
 # Architecture Freeze v1.0
 
-**Effective after Milestone 6** (T6.1–T6.3 shipped, tag `milestone-6.3`).
+**Status: IN EFFECT** — Milestone 6 is closed (T6.1–T6.3 and T6.5 shipped; T6.4 intentionally
+deferred, blocked on M5-UI — see [`ROADMAP.md`](ROADMAP.md)).
+
+Architecture Freeze v1.0 is now in effect. Future work should focus on features, reliability,
+performance, documentation, and user experience. Architectural changes require a new ADR.
 
 The architectural shape of AI Personal OS is settled. From here forward, work on this
 repository should **extend** this architecture, not redesign it. New tickets are features,
@@ -51,7 +55,7 @@ bugfixes, performance work, or polish — not restructuring.
 
 ## Architecture Freeze v1.0
 
-**Effective after Milestone 6.**
+**In effect as of Milestone 6 closing** (tag `milestone-6.5`).
 
 The architectural boundaries above are considered stable. The foundation is no longer in flux.
 
