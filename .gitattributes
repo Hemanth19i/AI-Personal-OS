@@ -1,0 +1,3 @@
+# Treat PDFs as binary so line-ending normalization never corrupts them
+# (e.g. the benchmark fixture benchmarks/fixtures/*.pdf).
+*.pdf binary

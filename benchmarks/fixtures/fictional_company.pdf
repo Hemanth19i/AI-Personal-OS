@@ -1,0 +1,66 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 1
+/Kids [ 4 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Page
+/MediaBox [ 0 0 612 792 ]
+/Resources <<
+/Font <<
+/F1 5 0 R
+>>
+>>
+/Contents 6 0 R
+/Parent 2 0 R
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+6 0 obj
+<<
+/Length 3667
+>>
+stream
+BT /F1 24 Tf 72 700 Td (The Meridian Project was founded by Dr. Elena Vasquez at the Kestrel Institute in 2019. Elena Vasquez leads the research team. The team includes Marcus Chen, a specialist in vector databases, and Priya Nair, who designed the knowledge graph module. The Meridian Project builds an offline knowledge system called Lumen. Lumen uses a component named GraphCore, written by Priya Nair, to connect entities across documents. Marcus Chen maintains the VectorStore module, which depends on the Kestrel embedding model. The Kestrel Institute is located in Portland and collaborates with the Aurora Lab on privacy research. The Aurora Lab is directed by James Okafor. James Okafor previously worked with Elena Vasquez on a project called Beacon, which studied federated retrieval. GraphCore was inspired by Beacon's design. Lumen stores its documents using the VectorStore module and queries them through GraphCore. Priya Nair reports to Elena Vasquez. Marcus Chen and Priya Nair both joined the Kestrel Institute in 2020. The Aurora Lab provided the Kestrel embedding model to the Meridian Project under a research agreement signed in 2021. Lumen runs entirely offline and never sends user data to any external service. The Meridian Project was founded by Dr. Elena Vasquez at the Kestrel Institute in 2019. Elena Vasquez leads the research team. The team includes Marcus Chen, a specialist in vector databases, and Priya Nair, who designed the knowledge graph module. The Meridian Project builds an offline knowledge system called Lumen. Lumen uses a component named GraphCore, written by Priya Nair, to connect entities across documents. Marcus Chen maintains the VectorStore module, which depends on the Kestrel embedding model. The Kestrel Institute is located in Portland and collaborates with the Aurora Lab on privacy research. The Aurora Lab is directed by James Okafor. James Okafor previously worked with Elena Vasquez on a project called Beacon, which studied federated retrieval. GraphCore was inspired by Beacon's design. Lumen stores its documents using the VectorStore module and queries them through GraphCore. Priya Nair reports to Elena Vasquez. Marcus Chen and Priya Nair both joined the Kestrel Institute in 2020. The Aurora Lab provided the Kestrel embedding model to the Meridian Project under a research agreement signed in 2021. Lumen runs entirely offline and never sends user data to any external service. The Meridian Project was founded by Dr. Elena Vasquez at the Kestrel Institute in 2019. Elena Vasquez leads the research team. The team includes Marcus Chen, a specialist in vector databases, and Priya Nair, who designed the knowledge graph module. The Meridian Project builds an offline knowledge system called Lumen. Lumen uses a component named GraphCore, written by Priya Nair, to connect entities across documents. Marcus Chen maintains the VectorStore module, which depends on the Kestrel embedding model. The Kestrel Institute is located in Portland and collaborates with the Aurora Lab on privacy research. The Aurora Lab is directed by James Okafor. James Okafor previously worked with Elena Vasquez on a project called Beacon, which studied federated retrieval. GraphCore was inspired by Beacon's design. Lumen stores its documents using the VectorStore module and queries them through GraphCore. Priya Nair reports to Elena Vasquez. Marcus Chen and Priya Nair both joined the Kestrel Institute in 2020. The Aurora Lab provided the Kestrel embedding model to the Meridian Project under a research agreement signed in 2021. Lumen runs entirely offline and never sends user data to any external service. ) Tj ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000113 00000 n 
+0000000162 00000 n 
+0000000290 00000 n 
+0000000360 00000 n 
+trailer
+<<
+/Size 7
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+4079
+%%EOF
