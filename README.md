@@ -75,3 +75,34 @@ skipped.
 python -m unittest discover -s tests
 ```
 
+The default suite is dependency-free: every external backend (Ollama, LanceDB,
+Tesseract) is covered by injected fakes, so it runs anywhere Python runs.
+
+## Offline validation
+
+The offline guarantee (nothing leaves the device — loopback to the local
+Ollama daemon is allowed, anything else is not) is validated two ways:
+
+**Automated (opt-in).** A socket-guard end-to-end test drives the real
+pipeline — real SQLite, LanceDB, Ollama, and Tesseract, no fakes — while
+blocking and recording any connection to a non-loopback host. It requires a
+running Ollama daemon with the models named in `config.toml` pulled, plus the
+Tesseract binary:
+
+```bash
+# Windows (PowerShell):
+$env:AIPOS_RUN_OFFLINE_E2E = "1"; python -m unittest tests.test_offline_validation
+# macOS / Linux:
+AIPOS_RUN_OFFLINE_E2E=1 python -m unittest tests.test_offline_validation
+```
+
+The guard's own positive-control tests (proving it really blocks off-device
+connections) run as part of the default suite with no external dependencies.
+
+**Manual (network physically off).** The unconditional backstop: disable the
+machine's network adapter (or unplug/turn off Wi-Fi), then run the full flow —
+start `python main.py`, drop a PDF into `data/watched/`, wait for it to reach
+`ready`, and ask a question with `python -m aipos.cli ask "..."`. Everything
+works identically with the network off; the only network-capable component,
+Ollama, is a local daemon reached over loopback.
+

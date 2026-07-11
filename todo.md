@@ -65,7 +65,8 @@ offline. **Met as of Milestone 6.3, via the CLI.**
 - [x] **T6.1** State-machine recovery: resume after crash; failed files retryable; one bad file never stalls
 - [x] **T6.2** Task queue so embedding/OCR/reasoning don't block each other
 - [x] **T6.3** Backup / restore / workspace export
-- [ ] **T6.5** Offline validation: full flow with the network physically off *(next — no dependency on M5-UI)*
+- [x] **T6.5** Offline validation: loopback-only socket guard + opt-in real-backend E2E
+      (`AIPOS_RUN_OFFLINE_E2E=1`); manual network-off procedure documented in README
 - [ ] **T6.4** System Health view *(⊘ BLOCKED on M5-UI + Event Bus — see Roadmap v2 §2)*
 
 > **Architecture Freeze v1.0** takes effect once M6 closes (T6.5 done) — see
