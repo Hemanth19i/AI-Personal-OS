@@ -1,0 +1,296 @@
+/* The Study — Design Candidate v1.0 tokens (frozen palette, light + lamplight).
+   Brass is the hue of following a thread: citations, links, the active pillar,
+   send, focus. Never status, never decoration. Status = dot + ink word. */
+
+:root {
+  --paper: #e9e6df;
+  --surface: #f5f3ee;
+  --sink: #efebe3;
+  --ink: #23201b;
+  --ink-soft: #6b655b;
+  --ink-faint: #7e7669;
+  --hair: #d8d3c8;
+  --hair-soft: #e3ded4;
+  --brass: #8a6a2c;
+  --brass-tint: #ede4d0;
+  --ready: #5e8b57;
+  --proc: #b58a2e;
+  --fail: #b0553f;
+  --pend: #9a9184;
+  --voice: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --ui: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1b1814;
+    --surface: #242019;
+    --sink: #201c16;
+    --ink: #e8e2d6;
+    --ink-soft: #a49a8b;
+    --ink-faint: #8f8678;
+    --hair: #332e26;
+    --hair-soft: #2a251e;
+    --brass: #c79a4e;
+    --brass-tint: #2c2417;
+    --ready: #7fab77;
+    --proc: #cda24e;
+    --fail: #ca735c;
+    --pend: #8a8175;
+  }
+}
+
+:root[data-theme="light"] {
+  --paper: #e9e6df;
+  --surface: #f5f3ee;
+  --sink: #efebe3;
+  --ink: #23201b;
+  --ink-soft: #6b655b;
+  --ink-faint: #7e7669;
+  --hair: #d8d3c8;
+  --hair-soft: #e3ded4;
+  --brass: #8a6a2c;
+  --brass-tint: #ede4d0;
+  --ready: #5e8b57;
+  --proc: #b58a2e;
+  --fail: #b0553f;
+  --pend: #9a9184;
+}
+
+:root[data-theme="dark"] {
+  --paper: #1b1814;
+  --surface: #242019;
+  --sink: #201c16;
+  --ink: #e8e2d6;
+  --ink-soft: #a49a8b;
+  --ink-faint: #8f8678;
+  --hair: #332e26;
+  --hair-soft: #2a251e;
+  --brass: #c79a4e;
+  --brass-tint: #2c2417;
+  --ready: #7fab77;
+  --proc: #cda24e;
+  --fail: #ca735c;
+  --pend: #8a8175;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.voice {
+  font-family: var(--voice);
+}
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---- shell ---- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100%;
+}
+
+.rail {
+  border-right: 1px solid var(--hair);
+  background: var(--surface);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-brand {
+  font-family: var(--voice);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 6px 12px 18px;
+  color: var(--ink);
+}
+
+.rail a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  position: relative;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+
+.rail a:hover {
+  background: var(--sink);
+  color: var(--ink);
+}
+
+.rail a.active {
+  background: var(--brass-tint);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.rail a.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 10px;
+  bottom: 10px;
+  width: 2.5px;
+  border-radius: 2px;
+  background: var(--brass);
+}
+
+.rail svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+  flex: none;
+}
+
+.rail-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--hair);
+  background: var(--sink);
+}
+
+.topbar .title {
+  font-family: var(--voice);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.topbar .spacer {
+  flex: 1;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  padding: 4px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.chip.fact {
+  border-color: transparent;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 48px 40px;
+}
+
+/* ---- placeholder pillars (real screens land W3+) ---- */
+
+.pillar-empty {
+  max-width: 58ch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pillar-empty h1 {
+  font-family: var(--voice);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pillar-empty p {
+  font-family: var(--voice);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-soft);
+}
+
+.pillar-empty .hint {
+  font-family: var(--ui);
+  font-style: normal;
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    grid-template-columns: 60px 1fr;
+  }
+  .rail a span,
+  .rail-brand,
+  .rail-foot span {
+    display: none;
+  }
+  .main {
+    padding: 28px 20px;
+  }
+}

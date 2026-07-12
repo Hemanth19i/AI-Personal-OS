@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -77,6 +78,21 @@ def create_app(runtime: Runtime) -> FastAPI:
             "Local-only API wrapping the AI Personal OS engine (ADR-017). "
             "The contract is the boundary; HTTP is the first transport."
         ),
+    )
+
+    # The web client's dev/preview origins only (W2). Everything is loopback;
+    # this exists solely because the Vite dev server runs on its own port.
+    # Widening this list is a deliberate decision, never a convenience.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+        ],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # -- system ---------------------------------------------------------------

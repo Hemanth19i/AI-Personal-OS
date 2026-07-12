@@ -96,6 +96,14 @@ class ApiTestCase(unittest.TestCase):
 
 
 class HealthTests(ApiTestCase):
+    def test_cors_allows_the_web_dev_origin_only(self) -> None:
+        allowed = self.client.get("/health", headers={"Origin": "http://localhost:5173"})
+        self.assertEqual(
+            allowed.headers.get("access-control-allow-origin"), "http://localhost:5173"
+        )
+        foreign = self.client.get("/health", headers={"Origin": "http://evil.example"})
+        self.assertIsNone(foreign.headers.get("access-control-allow-origin"))
+
     def test_health_reports_ok_and_configured_models(self) -> None:
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
