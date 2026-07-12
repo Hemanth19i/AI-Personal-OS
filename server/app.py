@@ -1,0 +1,283 @@
+"""Core API routes (W1): the engine's existing capabilities over HTTP.
+
+Every handler is a thin translation layer: open per-request engine handles via
+``Runtime``, call the same public functions the CLI calls, map the result onto
+the contract models in ``server.schemas``. No SQL, no LanceDB, no pipeline
+logic lives here — a handler that grows beyond translation belongs in the
+engine, behind its protocols.
+
+Write paths are exactly the CLI's: ``retry`` delegates to
+``aipos.ingest.retry_file`` (ingest stays the sole write coordinator) and
+``workspace import`` to ``aipos.backup.import_workspace`` (which refuses a
+non-empty install — surfaced as 409, the guardrail as reassurance).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+
+from aipos import backup, ingest
+from aipos.storage import DEFAULT_WORKSPACE_ID, FileRecord, FileStatus
+
+from server import __version__
+from server.schemas import (
+    AnswerResponse,
+    AskRequest,
+    ChunkModel,
+    DocumentModel,
+    EdgeModel,
+    EntityModel,
+    EntityPageResponse,
+    EvidenceModel,
+    ExplanationModel,
+    HealthResponse,
+    MessageResponse,
+    RetryResponse,
+    SearchHit,
+    SourceModel,
+)
+from server.wiring import Runtime
+
+logger = logging.getLogger(__name__)
+
+
+def _document(record: FileRecord) -> DocumentModel:
+    return DocumentModel(
+        id=record.id,
+        workspace_id=record.workspace_id,
+        path=record.path,
+        hash=record.hash,
+        status=str(record.status),
+        error=record.error,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _dir_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def create_app(runtime: Runtime) -> FastAPI:
+    """Build the Core API application around an engine ``Runtime``."""
+    app = FastAPI(
+        title="AI Personal OS — Core API",
+        version=__version__,
+        description=(
+            "Local-only API wrapping the AI Personal OS engine (ADR-017). "
+            "The contract is the boundary; HTTP is the first transport."
+        ),
+    )
+
+    # -- system ---------------------------------------------------------------
+
+    @app.get("/health", response_model=HealthResponse)
+    def health() -> HealthResponse:
+        db = runtime.database_path
+        return HealthResponse(
+            status="ok",
+            version=__version__,
+            embedding_model=runtime.config.embedding_model,
+            llm_model=runtime.config.llm_model,
+            database_bytes=db.stat().st_size if db.exists() else 0,
+            vector_store_bytes=_dir_bytes(runtime.vector_store_dir),
+        )
+
+    # -- ask ------------------------------------------------------------------
+
+    @app.post("/ask", response_model=AnswerResponse)
+    def ask(request: AskRequest) -> AnswerResponse:
+        with runtime.open_storage() as storage:
+            vector_store = runtime.open_vector_store()
+            service = runtime.build_answer_service(storage, vector_store)
+            try:
+                result = service.answer(request.question, k=request.k)
+            except Exception as error:  # backend (e.g. Ollama) unavailable
+                logger.exception("answer generation failed")
+                raise HTTPException(
+                    status_code=502, detail=f"Generation backend unavailable: {error}"
+                ) from error
+        explanation = result.explanation
+        return AnswerResponse(
+            answer=result.answer,
+            sources=[
+                SourceModel(chunk_id=s.chunk_id, file=s.file, snippet=s.snippet)
+                for s in result.sources
+            ],
+            grounded=result.grounded,
+            explanation=ExplanationModel(
+                timestamp=explanation.timestamp,
+                strategy=explanation.strategy,
+                reason=explanation.reason,
+                retrieved_count=explanation.retrieved_count,
+                graph_expanded=explanation.graph_expanded,
+                graph_relation_count=explanation.graph_relation_count,
+                reranked_count=explanation.reranked_count,
+                llm_consulted=explanation.llm_consulted,
+                grounded=explanation.grounded,
+                citation_count=explanation.citation_count,
+                confidence=str(explanation.confidence),
+                evidence=EvidenceModel(
+                    verified=explanation.evidence.verified,
+                    reason=explanation.evidence.reason,
+                    verified_citations=explanation.evidence.verified_citations,
+                    total_citations=explanation.evidence.total_citations,
+                ),
+            ),
+        )
+
+    # -- documents --------------------------------------------------------------
+
+    @app.get("/documents", response_model=list[DocumentModel])
+    def list_documents() -> list[DocumentModel]:
+        # Composed from the engine's existing per-status query (W1 exposes
+        # existing capabilities only); a dedicated list-all can arrive later as
+        # an additive storage method without changing this route's contract.
+        with runtime.open_storage() as storage:
+            records = [
+                record
+                for status in FileStatus
+                for record in storage.list_files_by_status(status)
+            ]
+        records.sort(key=lambda record: record.id)
+        return [_document(record) for record in records]
+
+    @app.get("/documents/{document_id}", response_model=DocumentModel)
+    def get_document(document_id: int) -> DocumentModel:
+        with runtime.open_storage() as storage:
+            record = storage.get_file(document_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"No document with id={document_id}")
+        return _document(record)
+
+    @app.get("/documents/{document_id}/chunks", response_model=list[ChunkModel])
+    def get_document_chunks(document_id: int) -> list[ChunkModel]:
+        with runtime.open_storage() as storage:
+            record = storage.get_file(document_id)
+            if record is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No document with id={document_id}"
+                )
+            chunks = storage.get_chunk_records(document_id)
+        return [ChunkModel(id=c.id, index=c.index, text=c.text) for c in chunks]
+
+    @app.post("/documents/{document_id}/retry", response_model=RetryResponse)
+    def retry_document(document_id: int) -> RetryResponse:
+        with runtime.open_storage() as storage:
+            record = storage.get_file(document_id)
+            if record is None:
+                raise HTTPException(
+                    status_code=404, detail=f"No document with id={document_id}"
+                )
+            embedder, ocr, extractor = runtime.build_ingest_backends()
+            vector_store = runtime.open_vector_store()
+            ingest.retry_file(document_id, storage, embedder, vector_store, ocr, extractor)
+            refreshed = storage.get_file(document_id)
+        if refreshed is None:  # unreachable: retry never deletes the row
+            raise HTTPException(status_code=500, detail="Document vanished during retry")
+        return RetryResponse(id=refreshed.id, status=str(refreshed.status))
+
+    # -- search -------------------------------------------------------------------
+
+    @app.get("/search", response_model=list[SearchHit])
+    def search(q: str, k: int = 5) -> list[SearchHit]:
+        if not q.strip():
+            raise HTTPException(status_code=422, detail="q must not be empty")
+        if not 1 <= k <= 50:
+            raise HTTPException(status_code=422, detail="k must be between 1 and 50")
+        with runtime.open_storage() as storage:
+            vector_store = runtime.open_vector_store()
+            retriever = runtime.build_retriever(storage, vector_store)
+            results = retriever.retrieve(q, k=k)
+        return [
+            SearchHit(chunk_id=r.chunk_id, text=r.text, score=r.score) for r in results
+        ]
+
+    # -- graph ----------------------------------------------------------------------
+
+    @app.get("/graph/edges", response_model=list[EdgeModel])
+    def graph_edges() -> list[EdgeModel]:
+        with runtime.open_storage() as storage:
+            edges = storage.get_edges()
+        return [
+            EdgeModel(
+                id=e.id,
+                source_entity_id=e.source_entity_id,
+                target_entity_id=e.target_entity_id,
+                relation=e.relation,
+                weight=e.weight,
+            )
+            for e in edges
+        ]
+
+    @app.get("/graph/entity", response_model=EntityPageResponse)
+    def entity_page(name: str) -> EntityPageResponse:
+        with runtime.open_storage() as storage:
+            entity = storage.get_entity_by_name(name)
+            if entity is None:
+                raise HTTPException(status_code=404, detail=f"No entity named {name!r}")
+            neighbors = storage.get_neighbors(entity.id)
+        return EntityPageResponse(
+            entity=EntityModel(id=entity.id, name=entity.name, type=entity.type),
+            neighbors=[
+                EntityModel(id=n.id, name=n.name, type=n.type) for n in neighbors
+            ],
+        )
+
+    # -- workspace ---------------------------------------------------------------------
+
+    @app.get("/workspace/export")
+    def export_workspace() -> FileResponse:
+        handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        handle.close()
+        destination = Path(handle.name)
+        try:
+            with runtime.open_storage() as storage:
+                backup.export_workspace(
+                    DEFAULT_WORKSPACE_ID, storage, runtime.vector_store_dir, destination
+                )
+        except Exception:
+            os.remove(destination)  # don't leak the temp archive on failure
+            raise
+        return FileResponse(
+            destination,
+            filename="aipos-workspace.zip",
+            media_type="application/zip",
+            background=BackgroundTask(os.remove, destination),
+        )
+
+    @app.post(
+        "/workspace/import",
+        response_model=MessageResponse,
+        responses={409: {"model": MessageResponse}, 400: {"model": MessageResponse}},
+    )
+    def import_workspace(archive: UploadFile) -> MessageResponse:
+        # Sync handler (FastAPI runs it in a worker thread) so the upload can
+        # stream to disk without buffering the whole archive in memory.
+        handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        try:
+            shutil.copyfileobj(archive.file, handle)
+            handle.close()
+            backup.import_workspace(
+                Path(handle.name), runtime.database_path, runtime.vector_store_dir
+            )
+        except RuntimeError as error:  # refuses a non-empty install (T6.3)
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:  # not a valid workspace archive
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        finally:
+            handle.close()
+            os.remove(handle.name)
+        return MessageResponse(detail="Workspace imported")
+
+    return app
