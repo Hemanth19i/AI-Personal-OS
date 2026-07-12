@@ -1,0 +1,14 @@
+# AI Personal OS — Core API dependencies (W1, ADR-017).
+#
+# Deliberately separate from the root requirements.txt: the engine's
+# dependencies are frozen; the client layer carries its own. Install both:
+#   pip install -r requirements.txt -r server/requirements.txt
+
+fastapi>=0.110
+uvicorn>=0.29
+
+# Multipart parsing for POST /workspace/import (UploadFile).
+python-multipart>=0.0.9
+
+# Test-only: FastAPI's TestClient transport.
+httpx>=0.27

@@ -387,6 +387,48 @@ describe the bus's *role* once it exists; this ADR fixes *when* it starts existi
 
 ---
 
+## ADR-017 — Core API as the client boundary; local HTTP as its first transport
+
+**Status:** Accepted
+
+**Context.** Phase 1 shipped a frozen engine usable only in-process (CLI, watcher, benchmarks,
+tests — all Python, all on one machine). The client platform (web, desktop, mobile) introduces a
+**new interaction model**: human-facing, GUI, multi-device, live. Architecture Freeze v1.0 requires
+a new boundary to be decided by ADR before code. Two constraints frame the decision: ADR-001 (the
+client must never require the cloud; loopback is on-device) and freeze integrity (the boundary must
+*wrap* the engine — no SQL outside `storage.py`, no LanceDB outside `vector_store.py`, `ingest.py`
+stays the sole write coordinator).
+
+**Decision.** Introduce a **Core API** as the client-facing architectural boundary — a stable,
+versioned *contract* (operations + payload shapes) that all clients depend on. Its **first
+transport is local HTTP (REST), bound to `127.0.0.1`**; the transport is an implementation choice
+behind the contract, not the boundary itself — a future transport (IPC/Tauri commands for a
+zero-port desktop path, SSE/streaming additions, an authenticated LAN mode for mobile per ADR-010)
+can be added behind the same contract without changing clients. The API lives in a new package
+(`server/`) that wraps `aipos` exactly as the CLI does; the engine is unchanged.
+
+**Alternatives considered.**
+- *Python bridge / Tauri commands / IPC as the sole boundary:* tightest security (no port), but
+  desktop-only — it cannot serve a browser or a LAN device, forcing a second transport later.
+  Rejected as the boundary; retained as a possible desktop transport behind the same contract.
+- *gRPC:* typed streaming, but browsers need a grpc-web proxy — an extra moving part for the
+  primary client. Rejected.
+- *Hosted (cloud) API:* violates ADR-001 outright. Named only to fix the rule: the web client is
+  locally served, never a SaaS.
+- *Stay CLI-only:* fails the initiative's goal. Rejected.
+
+**Consequences.**
+- (+) One contract, one generated client; web/desktop/mobile reuse cascades; the long-deferred
+  M5-UI track is unblocked through ADRs rather than freeze violations.
+- (+) The CLI and watcher remain valid peers of the same services (ADR-006 realized).
+- (−) A local server process and a loopback port — mitigated by binding to `127.0.0.1` only, no
+  telemetry, and any LAN exposure being a separate, explicit, authenticated decision.
+- (−) Some client needs (list-all documents, streaming answers, health snapshot, conversations)
+  exceed today's engine surface; each lands as a small additive, freeze-compliant change when its
+  milestone needs it — never a redesign.
+
+---
+
 ## Decision index
 
 | ADR | Decision | Status |
@@ -407,6 +449,7 @@ describe the bus's *role* once it exists; this ADR fixes *when* it starts existi
 | 014 | Defer multi-agent to Phase 2 | Accepted |
 | 015 | LanceDB locked as Phase 1 vector store | Accepted |
 | 016 | Event bus introduced at Milestone 5, not from Phase 1 start | Accepted |
+| 017 | Core API is the client boundary; local HTTP its first transport | Accepted |
 
 ---
 
