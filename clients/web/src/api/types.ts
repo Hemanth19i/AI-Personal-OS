@@ -10,3 +10,38 @@ export interface HealthResponse {
   vector_store_bytes: number;
   offline: boolean;
 }
+
+export interface Source {
+  chunk_id: number;
+  file: string;
+  snippet: string;
+}
+
+export interface Evidence {
+  verified: boolean;
+  reason: string;
+  verified_citations: number;
+  total_citations: number;
+}
+
+export interface Explanation {
+  timestamp: string;
+  strategy: string;
+  reason: string;
+  retrieved_count: number;
+  graph_expanded: boolean;
+  graph_relation_count: number;
+  reranked_count: number;
+  llm_consulted: boolean;
+  grounded: boolean;
+  citation_count: number;
+  confidence: string;
+  evidence: Evidence;
+}
+
+export interface AnswerResponse {
+  answer: string;
+  sources: Source[];
+  grounded: boolean;
+  explanation: Explanation;
+}
