@@ -28,6 +28,11 @@ from starlette.background import BackgroundTask
 from aipos import backup, ingest
 from aipos.storage import DEFAULT_WORKSPACE_ID, FileRecord, FileStatus
 
+# The document types the engine accepts (config: PDF/TXT/Markdown). Only PDFs
+# are parsed today (T2.x); a TXT/Markdown upload registers and waits, exactly
+# as the folder watcher leaves it — the API mirrors the engine, never guesses.
+ACCEPTED_SUFFIXES = {".pdf", ".txt", ".md"}
+
 from server import __version__
 from server.schemas import (
     AnswerResponse,
@@ -67,6 +72,18 @@ def _dir_bytes(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _unique_path(directory: Path, filename: str) -> Path:
+    """A non-colliding path in ``directory`` for ``filename`` (basename only)."""
+    stem = Path(filename).stem or "document"
+    suffix = Path(filename).suffix
+    candidate = directory / f"{stem}{suffix}"
+    counter = 1
+    while candidate.exists():
+        candidate = directory / f"{stem}-{counter}{suffix}"
+        counter += 1
+    return candidate
 
 
 def create_app(runtime: Runtime) -> FastAPI:
@@ -167,6 +184,36 @@ def create_app(runtime: Runtime) -> FastAPI:
             ]
         records.sort(key=lambda record: record.id)
         return [_document(record) for record in records]
+
+    @app.post("/documents", response_model=DocumentModel, status_code=202)
+    async def add_document(file: UploadFile) -> DocumentModel:
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in ACCEPTED_SUFFIXES:
+            raise HTTPException(
+                status_code=415,
+                detail=f"Unsupported type {suffix or '(none)'}; accepts PDF, TXT, Markdown",
+            )
+        # Save into the watched folder under a sanitized, collision-free name,
+        # streaming to disk (no whole-file buffering in RAM).
+        runtime.config.watched_folder.mkdir(parents=True, exist_ok=True)
+        destination = _unique_path(runtime.config.watched_folder, Path(file.filename).name)
+        with destination.open("wb") as sink:
+            while chunk := await file.read(1 << 20):
+                sink.write(chunk)
+
+        # Register synchronously (fast: hash + one INSERT) so the document is
+        # never lost between "uploaded" and "in the library"; defer the heavy
+        # pipeline to the queue. Duplicate *content* is skipped by the engine.
+        with runtime.open_storage() as storage:
+            record = ingest.register_file(destination, storage)
+        if record is None:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=409, detail="This document is already in your library"
+            )
+        if suffix == ".pdf":
+            runtime.submit_ingest_job(record.id, destination)
+        return _document(record)
 
     @app.get("/documents/{document_id}", response_model=DocumentModel)
     def get_document(document_id: int) -> DocumentModel:
@@ -295,5 +342,9 @@ def create_app(runtime: Runtime) -> FastAPI:
             handle.close()
             os.remove(handle.name)
         return MessageResponse(detail="Workspace imported")
+
+    @app.on_event("shutdown")
+    def _stop_ingestion() -> None:
+        runtime.shutdown()
 
     return app

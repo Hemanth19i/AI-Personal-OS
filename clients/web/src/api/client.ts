@@ -2,15 +2,34 @@
  *  The contract is the boundary; this module is the only place the web
  *  client knows a URL exists. */
 
-import type { AnswerResponse, HealthResponse } from "./types";
+import type { AnswerResponse, Document, HealthResponse } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8765";
 
+/** An API error that carries the HTTP status and the engine's detail. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+  ) {
+    super(detail);
+  }
+}
+
+async function readError(response: Response): Promise<never> {
+  let detail = `${response.status}`;
+  try {
+    const body = await response.json();
+    if (body && typeof body.detail === "string") detail = body.detail;
+  } catch {
+    /* non-JSON error body — keep the status */
+  }
+  throw new ApiError(response.status, detail);
+}
+
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`);
-  if (!response.ok) {
-    throw new Error(`${path} failed: ${response.status}`);
-  }
+  if (!response.ok) return readError(response);
   return (await response.json()) as T;
 }
 
@@ -29,8 +48,27 @@ export async function postAsk(
     body: JSON.stringify({ question }),
     signal,
   });
-  if (!response.ok) {
-    throw new Error(`/ask failed: ${response.status}`);
-  }
+  if (!response.ok) return readError(response);
   return (await response.json()) as AnswerResponse;
+}
+
+export function fetchDocuments(): Promise<Document[]> {
+  return get<Document[]>("/documents");
+}
+
+export async function retryDocument(id: number): Promise<Document> {
+  const response = await fetch(`${BASE_URL}/documents/${id}/retry`, {
+    method: "POST",
+  });
+  if (!response.ok) return readError(response);
+  return (await response.json()) as Document;
+}
+
+/** Upload a document; the engine registers it and begins processing (202). */
+export async function uploadDocument(file: File): Promise<Document> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${BASE_URL}/documents`, { method: "POST", body });
+  if (!response.ok) return readError(response);
+  return (await response.json()) as Document;
 }

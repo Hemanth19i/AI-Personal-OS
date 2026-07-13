@@ -45,3 +45,14 @@ export interface AnswerResponse {
   grounded: boolean;
   explanation: Explanation;
 }
+
+export interface Document {
+  id: number;
+  workspace_id: string;
+  path: string;
+  hash: string;
+  status: string;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
