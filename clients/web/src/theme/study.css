@@ -709,3 +709,144 @@ body {
   align-items: center;
   gap: 6px;
 }
+
+/* ---- Search (W5) ---- */
+
+.search-page { max-width: 760px; }
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--hair);
+  border-radius: 11px;
+  padding: 11px 14px;
+  background: var(--surface);
+  margin-bottom: 8px;
+}
+
+.search-field:focus-within {
+  border-color: var(--brass);
+}
+
+.search-icon {
+  width: 18px;
+  height: 18px;
+  stroke: var(--ink-faint);
+  fill: none;
+  stroke-width: 1.5;
+  flex: none;
+}
+
+.search-field input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 15px;
+}
+
+.search-field input::placeholder { color: var(--ink-faint); }
+
+.search-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 4px;
+}
+
+.search-filter button {
+  border: 1px solid var(--hair);
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--ui);
+  font-size: 12px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+
+.search-filter button:hover { background: var(--sink); }
+.search-filter button.on {
+  background: var(--brass-tint);
+  color: var(--ink);
+  border-color: transparent;
+  font-weight: 500;
+}
+
+.search-hint {
+  font-size: 14px;
+  color: var(--ink-soft);
+  padding: 20px 0;
+}
+
+.search-hint.voice { font-style: italic; font-size: 15px; }
+
+.search-summary {
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin: 16px 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.search-results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.result {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--hair-soft);
+}
+
+.result-src {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  margin-bottom: 5px;
+}
+
+.result-quote {
+  font-size: 15.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  margin: 0;
+}
+
+.result-quote mark {
+  background: var(--brass-tint);
+  color: var(--ink);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.result-actions {
+  margin-top: 8px;
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+
+.result:hover .result-actions,
+.result:focus-within .result-actions {
+  opacity: 1;
+}
+
+.result-ask {
+  font-family: var(--ui);
+  font-size: 12px;
+  color: var(--brass);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.result-ask:hover { text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) {
+  .result-actions { opacity: 1; }
+}

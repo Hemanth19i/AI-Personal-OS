@@ -262,8 +262,18 @@ def create_app(runtime: Runtime) -> FastAPI:
             vector_store = runtime.open_vector_store()
             retriever = runtime.build_retriever(storage, vector_store)
             results = retriever.retrieve(q, k=k)
+            sources = {
+                source.chunk_id: source.file_path
+                for source in storage.get_chunk_sources([r.chunk_id for r in results])
+            }
         return [
-            SearchHit(chunk_id=r.chunk_id, text=r.text, score=r.score) for r in results
+            SearchHit(
+                chunk_id=r.chunk_id,
+                text=r.text,
+                score=r.score,
+                file=sources.get(r.chunk_id, ""),
+            )
+            for r in results
         ]
 
     # -- graph ----------------------------------------------------------------------

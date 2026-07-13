@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { postAsk } from "../api/client";
 import { AnswerBlock, type Exchange } from "../ask/AnswerBlock";
 import { Composer } from "../ask/Composer";
@@ -13,6 +14,11 @@ export function Ask() {
   const abortRef = useRef<AbortController | null>(null);
   const deskRef = useRef<HTMLDivElement>(null);
   const busy = thread.some((exchange) => exchange.kind === "asking");
+
+  // "Ask about this" from Search arrives as router state, pre-filling the
+  // composer (never auto-sending — the reader chooses).
+  const location = useLocation();
+  const seed = (location.state as { seed?: string } | null)?.seed;
 
   // Follow the growing answer only while the reader is already near the foot.
   useEffect(() => {
@@ -72,7 +78,12 @@ export function Ask() {
           ))}
         </div>
       </div>
-      <Composer busy={busy} onAsk={ask} onStop={() => abortRef.current?.abort()} />
+      <Composer
+        busy={busy}
+        seed={seed}
+        onAsk={ask}
+        onStop={() => abortRef.current?.abort()}
+      />
     </div>
   );
 }

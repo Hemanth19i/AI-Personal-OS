@@ -246,7 +246,7 @@ class RetryTests(ApiTestCase):
 
 
 class SearchTests(ApiTestCase):
-    def test_search_returns_ranked_hits_with_text(self) -> None:
+    def test_search_returns_ranked_hits_with_text_and_source(self) -> None:
         _, chunk_ids = self.seed_document()
         self.vector_store.hits = [(chunk_ids[1], 0.02), (chunk_ids[0], 0.08)]
         response = self.client.get("/search", params={"q": "GraphCore", "k": 2})
@@ -254,6 +254,8 @@ class SearchTests(ApiTestCase):
         hits = response.json()
         self.assertEqual([h["chunk_id"] for h in hits], [chunk_ids[1], chunk_ids[0]])
         self.assertIn("Lumen", hits[0]["text"])
+        # Each hit names the document its passage came from (the source line).
+        self.assertTrue(hits[0]["file"].endswith("meridian.pdf"))
 
     def test_search_rejects_blank_query_and_bad_k(self) -> None:
         self.assertEqual(self.client.get("/search", params={"q": "  "}).status_code, 422)

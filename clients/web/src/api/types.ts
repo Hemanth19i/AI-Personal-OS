@@ -56,3 +56,10 @@ export interface Document {
   created_at: string;
   updated_at: string;
 }
+
+export interface SearchHit {
+  chunk_id: number;
+  text: string;
+  score: number;
+  file: string;
+}
