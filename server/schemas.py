@@ -101,11 +101,14 @@ class RetryResponse(BaseModel):
 
 
 class SearchHit(BaseModel):
-    """One retrieved chunk, as ``aipos.retrieval.RetrievalResult``."""
+    """One retrieved chunk (``aipos.retrieval.RetrievalResult``) with its source
+    file resolved (``aipos.storage.get_chunk_sources``) so a result can name
+    where the passage came from — the Search screen's source line."""
 
     chunk_id: int
     text: str
     score: float
+    file: str
 
 
 # -- graph ----------------------------------------------------------------------

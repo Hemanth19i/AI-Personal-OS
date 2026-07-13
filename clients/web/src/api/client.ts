@@ -2,7 +2,12 @@
  *  The contract is the boundary; this module is the only place the web
  *  client knows a URL exists. */
 
-import type { AnswerResponse, Document, HealthResponse } from "./types";
+import type {
+  AnswerResponse,
+  Document,
+  HealthResponse,
+  SearchHit,
+} from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8765";
 
@@ -27,10 +32,14 @@ async function readError(response: Response): Promise<never> {
   throw new ApiError(response.status, detail);
 }
 
-async function get<T>(path: string): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`);
+async function getSignal<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(`${BASE_URL}${path}`, { signal });
   if (!response.ok) return readError(response);
   return (await response.json()) as T;
+}
+
+function get<T>(path: string): Promise<T> {
+  return getSignal<T>(path);
 }
 
 export function fetchHealth(): Promise<HealthResponse> {
@@ -62,6 +71,14 @@ export async function retryDocument(id: number): Promise<Document> {
   });
   if (!response.ok) return readError(response);
   return (await response.json()) as Document;
+}
+
+export function searchDocuments(
+  query: string,
+  signal?: AbortSignal,
+): Promise<SearchHit[]> {
+  const params = new URLSearchParams({ q: query, k: "20" });
+  return getSignal<SearchHit[]>(`/search?${params}`, signal);
 }
 
 /** Upload a document; the engine registers it and begins processing (202). */

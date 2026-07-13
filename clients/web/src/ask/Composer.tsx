@@ -1,18 +1,30 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** The ask input. Enter sends, Shift+Enter breaks a line; while an answer is
- *  in flight the send key becomes a real Stop (aborts the request). */
+ *  in flight the send key becomes a real Stop (aborts the request). A `seed`
+ *  (e.g. arriving from Search) pre-fills the draft without auto-sending — the
+ *  reader still chooses to ask. */
 export function Composer({
   busy,
+  seed,
   onAsk,
   onStop,
 }: {
   busy: boolean;
+  seed?: string;
   onAsk: (question: string) => void;
   onStop: () => void;
 }) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(seed ?? "");
   const areaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (seed) {
+      setDraft(seed);
+      const area = areaRef.current;
+      if (area) area.focus();
+    }
+  }, [seed]);
 
   const submit = () => {
     const question = draft.trim();
