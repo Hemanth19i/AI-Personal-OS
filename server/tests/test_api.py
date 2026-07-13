@@ -29,6 +29,16 @@ from tests.ocr_fakes import RecordingOcr
 from tests.pdf_fixtures import make_text_pdf
 
 
+class InlineTaskQueue:
+    """Runs each submitted job synchronously — deterministic uploads in tests."""
+
+    def submit(self, job) -> None:  # noqa: ANN001 - protocol signature
+        job()
+
+    def stop(self, *, wait: bool = False) -> None:
+        pass
+
+
 class SeededVectorStore:
     """Returns a configured ranking; records adds (no LanceDB)."""
 
@@ -59,6 +69,7 @@ class ApiTestCase(unittest.TestCase):
             ocr_factory=lambda: RecordingOcr(),
             extractor_factory=lambda: RecordingExtractor(),
             vector_store_factory=lambda: self.vector_store,
+            task_queue_factory=InlineTaskQueue,
         )
         self.client = TestClient(create_app(self.runtime))
 
@@ -167,6 +178,48 @@ class DocumentTests(ApiTestCase):
         chunks = self.client.get(f"/documents/{file_id}/chunks").json()
         self.assertEqual([c["id"] for c in chunks], chunk_ids)
         self.assertEqual(self.client.get("/documents/99999/chunks").status_code, 404)
+
+
+class UploadTests(ApiTestCase):
+    def test_upload_pdf_registers_and_processes_to_ready(self) -> None:
+        pdf = make_text_pdf("GraphCore connects entities across documents")
+        response = self.client.post(
+            "/documents",
+            files={"file": ("meridian.pdf", pdf, "application/pdf")},
+        )
+        self.assertEqual(response.status_code, 202)
+        document_id = response.json()["id"]
+        # The inline queue ran the pipeline synchronously with fakes.
+        self.assertEqual(
+            self.client.get(f"/documents/{document_id}").json()["status"], "ready"
+        )
+        listed = self.client.get("/documents").json()
+        self.assertEqual([d["id"] for d in listed], [document_id])
+        self.assertTrue(self.vector_store.added)
+
+    def test_upload_rejects_unsupported_type(self) -> None:
+        response = self.client.post(
+            "/documents",
+            files={"file": ("notes.docx", b"x", "application/octet-stream")},
+        )
+        self.assertEqual(response.status_code, 415)
+
+    def test_upload_duplicate_content_is_409(self) -> None:
+        pdf = make_text_pdf("the same bytes twice")
+        first = self.client.post("/documents", files={"file": ("a.pdf", pdf, "application/pdf")})
+        self.assertEqual(first.status_code, 202)
+        again = self.client.post("/documents", files={"file": ("b.pdf", pdf, "application/pdf")})
+        self.assertEqual(again.status_code, 409)
+
+    def test_upload_txt_registers_but_stays_pending(self) -> None:
+        # Honest mirror of the engine: TXT is accepted and registered, but not
+        # yet parsed, so it waits at pending — never silently "processing".
+        response = self.client.post(
+            "/documents",
+            files={"file": ("notes.txt", b"plain text", "text/plain")},
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "pending")
 
 
 class RetryTests(ApiTestCase):
